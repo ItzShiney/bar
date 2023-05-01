@@ -11,12 +11,12 @@ use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
 
-pub type CommonIdent<'code> = &'code str;
+pub type Ident<'code> = &'code str;
 
 #[derive(Clone, Copy)]
 pub enum VarIdent<'code> {
-    Global(CommonIdent<'code>),
-    Local(CommonIdent<'code>),
+    Global(Ident<'code>),
+    Local(Ident<'code>),
 }
 
 impl Display for VarIdent<'_> {
@@ -29,21 +29,6 @@ impl Display for VarIdent<'_> {
 }
 
 impl Debug for VarIdent<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Display::fmt(self, f)
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct LabelIdent<'code>(CommonIdent<'code>);
-
-impl Display for LabelIdent<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl Debug for LabelIdent<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Display::fmt(self, f)
     }
@@ -121,8 +106,8 @@ pub enum JumpType {
 pub enum Instruction<'code> {
     SetValue { value: Value<'code>, out: VarIdent<'code> },
     FunctionCall { ident: VarIdent<'code>, args: Vec<Value<'code>>, out: Option<VarIdent<'code>> },
-    LabelDefinition { ident: LabelIdent<'code> },
-    Go { type_: JumpType, label: LabelIdent<'code> },
+    LabelDefinition { ident: Ident<'code> },
+    Go { type_: JumpType, label: Ident<'code> },
     Return,
 
     FunctionDefinition { signature: FunctionSignature<'code>, body: Vec<Instruction<'code>> },
@@ -191,10 +176,10 @@ pub fn wtag<'code, 'r>(
 pub fn keyword<'code: 'r, 'r>(
     keyword: &'r str,
 ) -> impl FnMut(&'code str) -> IResult<&'code str, &'code str> + 'r {
-    verify(common_ident, move |ident: &str| ident == keyword)
+    verify(ident, move |ident: &str| ident == keyword)
 }
 
-pub fn common_ident(input: &str) -> IResult<&str, CommonIdent> {
+pub fn ident(input: &str) -> IResult<&str, Ident> {
     pub fn ident_chrs(input: &str) -> IResult<&str, &str> {
         take_while(is_ident_chr)(input)
     }
@@ -210,7 +195,7 @@ pub fn common_ident(input: &str) -> IResult<&str, CommonIdent> {
 pub fn var_ident(input: &str) -> IResult<&str, VarIdent> {
     skip_spaces!(input);
     let (input, global_prefix) = opt(wtag("@"))(input)?;
-    let (input, ident) = common_ident(input)?;
+    let (input, ident) = ident(input)?;
 
     let ident_f = match global_prefix {
         Some(_) => VarIdent::Global,
@@ -220,8 +205,8 @@ pub fn var_ident(input: &str) -> IResult<&str, VarIdent> {
     Ok((input, ident_f(ident)))
 }
 
-pub fn label_ident(input: &str) -> IResult<&str, LabelIdent> {
-    map(common_ident, LabelIdent)(input)
+pub fn label_ident(input: &str) -> IResult<&str, Ident> {
+    ident(input)
 }
 
 pub fn idents(input: &str) -> IResult<&str, Vec<VarIdent>> {
@@ -286,9 +271,7 @@ pub fn instruction(input: &str) -> IResult<&str, Instruction> {
     }
 
     fn ret(input: &str) -> IResult<&str, Instruction> {
-        let (input, _) = keyword("ret")(input)?;
-
-        Ok((input, Instruction::Return))
+        map(keyword("ret"), |_| Instruction::Return)(input)
     }
 
     fn function_definition(input: &str) -> IResult<&str, Instruction> {
