@@ -190,9 +190,25 @@ pub fn is_ident_chr(chr: char) -> bool {
     can_start_ident(chr) || chr.is_ascii_digit()
 }
 
+pub fn spaces(input: &str) -> IResult<&str, ()> {
+    fn spaces(input: &str) -> IResult<&str, ()> {
+        nom_value((), multispace1)(input)
+    }
+
+    fn line_comment(input: &str) -> IResult<&str, ()> {
+        preceded(tag("//"), cut(nom_value((), not_line_ending)))(input)
+    }
+
+    fn block_comment(input: &str) -> IResult<&str, ()> {
+        delimited(tag("/*"), cut(nom_value((), take_until("*/"))), tag("*/"))(input)
+    }
+
+    nom_value((), many0(alt((spaces, line_comment, block_comment))))(input)
+}
+
 macro_rules! skip_spaces {
     ($input:ident) => {
-        let ($input, _) = multispace0($input)?;
+        let ($input, _) = $crate::spaces($input)?;
     };
 }
 
@@ -346,9 +362,7 @@ pub fn instruction(input: &str) -> IResult<&str, Instruction> {
 }
 
 pub fn instructions(input: &str) -> IResult<&str, Vec<Instruction>> {
-    let (input, instructions) = many0(instruction)(input)?;
-
-    Ok((input, instructions))
+    delimited(spaces, many0(instruction), spaces)(input)
 }
 
 #[derive(Debug, Clone)]
