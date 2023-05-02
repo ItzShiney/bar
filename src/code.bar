@@ -1,0 +1,9 @@
+1 > a
+2 > b
+sum(a b) > c
+println(c)
+
+"Hello" > a
+"World" > b
+join(a b) > c
+println(c)
