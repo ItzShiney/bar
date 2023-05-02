@@ -1,9 +1,5 @@
-1 > a
-2 > b
-sum(a b) > c
-println(c)
+true > @if
 
-"Hello" > a
-"World" > b
-join(a b) > c
-println(c)
+goif a
+    print("@if was false")
+:a

@@ -419,7 +419,7 @@ impl<'code> VM<'code> {
     pub fn run_instructions(&mut self, instructions: &[Instruction<'code>]) {
         let mut instruction_idx = 0;
 
-        while instruction_idx < instructions.len() {
+        'run: while instruction_idx < instructions.len() {
             let instruction = &instructions[instruction_idx];
             instruction_idx += 1;
 
@@ -475,7 +475,7 @@ impl<'code> VM<'code> {
                             Value::None
                         }
 
-                        _ => panic!("function '{}' does not exist", ident),
+                        _ => panic!("function '{}' was not found", ident),
                     };
 
                     if let Some(out) = out {
@@ -485,7 +485,41 @@ impl<'code> VM<'code> {
 
                 Instruction::LabelDefinition { .. } => {}
 
-                Instruction::Go { type_: _, label: _ } => todo!(),
+                Instruction::Go { type_, label } => {
+                    match type_ {
+                        JumpType::Forced => {}
+
+                        JumpType::If => match self.globals["if"] {
+                            Value::Bool(true) => {}
+                            Value::Bool(false) => continue,
+                            _ => panic!("@if should be a bool"),
+                        },
+
+                        JumpType::IfNot => match self.globals["if"] {
+                            Value::Bool(false) => {}
+                            Value::Bool(true) => continue,
+                            _ => panic!("@if should be a bool"),
+                        },
+                    }
+
+                    instruction_idx = 0;
+                    '_search: while instruction_idx < instructions.len() {
+                        let instruction = &instructions[instruction_idx];
+                        instruction_idx += 1;
+
+                        match *instruction {
+                            Instruction::LabelDefinition { ident: definition_ident }
+                                if label == definition_ident =>
+                            {
+                                continue 'run
+                            }
+
+                            _ => {}
+                        }
+                    }
+
+                    panic!("label '{}' was not found", label);
+                }
 
                 Instruction::Return => break,
 
