@@ -266,20 +266,33 @@ pub fn var_idents(input: &str) -> IResult<&str, Vec<VarIdent>> {
 }
 
 pub fn value(input: &str) -> IResult<&str, ValueSource> {
-    pub fn number(input: &str) -> IResult<&str, f64> {
+    fn keyword_value(input: &str) -> IResult<&str, ValueSource> {
+        match ident(input)? {
+            (input, "none") => Ok((input, ValueSource::Literal(Value::None))),
+            (input, "true") => Ok((input, ValueSource::Literal(Value::Bool(true)))),
+            (input, "false") => Ok((input, ValueSource::Literal(Value::Bool(false)))),
+            _ => fail(input),
+        }
+    }
+
+    fn var(input: &str) -> IResult<&str, ValueSource> {
+        map(var_ident, ValueSource::Ident)(input)
+    }
+
+    fn number(input: &str) -> IResult<&str, ValueSource> {
         skip_spaces!(input);
-        double(input)
+        let (input, res) = double(input)?;
+
+        Ok((input, ValueSource::Literal(Value::Number(res))))
     }
 
-    pub fn string(input: &str) -> IResult<&str, &str> {
-        delimited(wtag("\""), take_until("\""), tag("\""))(input)
+    fn string(input: &str) -> IResult<&str, ValueSource> {
+        let (input, res) = delimited(wtag("\""), take_until("\""), tag("\""))(input)?;
+
+        Ok((input, ValueSource::Literal(Value::String(Cow::Borrowed(res)))))
     }
 
-    map(var_ident, ValueSource::Ident)(input)
-        .or_else(|_| map(number, |number| ValueSource::Literal(Value::Number(number)))(input))
-        .or_else(|_| {
-            map(string, |string| ValueSource::Literal(Value::String(Cow::Borrowed(string))))(input)
-        })
+    alt((keyword_value, var, number, string))(input)
 }
 
 pub fn values(input: &str) -> IResult<&str, Vec<ValueSource>> {
@@ -313,19 +326,19 @@ pub fn instruction(input: &str) -> IResult<&str, Instruction> {
     }
 
     fn go(input: &str) -> IResult<&str, Instruction> {
-        let (input, (_, label)) = (keyword("go"), cut(label_ident)).parse(input)?;
+        let (input, label) = preceded(keyword("go"), cut(label_ident))(input)?;
 
         Ok((input, Instruction::Go { type_: JumpType::Forced, label }))
     }
 
     fn goif(input: &str) -> IResult<&str, Instruction> {
-        let (input, (_, label)) = (keyword("goif"), cut(label_ident)).parse(input)?;
+        let (input, label) = preceded(keyword("goif"), cut(label_ident))(input)?;
 
         Ok((input, Instruction::Go { type_: JumpType::If, label }))
     }
 
     fn goifn(input: &str) -> IResult<&str, Instruction> {
-        let (input, (_, label)) = (keyword("goifn"), cut(label_ident)).parse(input)?;
+        let (input, label) = preceded(keyword("goifn"), cut(label_ident))(input)?;
 
         Ok((input, Instruction::Go { type_: JumpType::IfNot, label }))
     }
@@ -367,17 +380,19 @@ pub fn instructions(input: &str) -> IResult<&str, Vec<Instruction>> {
 
 #[derive(Debug, Clone)]
 pub enum Value<'code> {
+    None,
+    Bool(bool),
     Number(f64),
     String(Cow<'code, str>),
-    None,
 }
 
 impl Display for Value<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::Number(number) => write!(f, "{}", number),
-            Self::String(string) => write!(f, "{}", string),
+        match *self {
             Self::None => write!(f, "none"),
+            Self::Bool(bool) => write!(f, "{}", bool),
+            Self::Number(number) => write!(f, "{}", number),
+            Self::String(ref string) => write!(f, "{}", string),
         }
     }
 }
