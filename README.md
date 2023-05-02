@@ -102,10 +102,15 @@ go infinite
 
 ```rust
 // global `if` variable is used to determine whether the jump should happen
-true > @if
+eq(a 5) > @if
 
-// jumps to `:a`, since `@if` is true
+// "go if"
+// jumps to `:a` if `@if` is true
 goif a
+
+// "go if not"
+// jumps to `:a` if `@if` is false
+goifn a
 ```
 
 ```rust
