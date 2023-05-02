@@ -521,21 +521,3 @@ fn main() {
 
     vm.run(include_str!("code.bar")).unwrap();
 }
-
-/*
-{ sum-all(list) > sum
-    @len(list) > idx
-    0 > sum
-
-    :loop
-        @eq(idx 0) > @if
-        goifn not-zero
-            ret
-        :not-zero
-
-        @sub(idx 1) > idx
-        @get(list idx) > item
-        @sum(sum item) > sum
-    go loop
-}
-*/
