@@ -1,4 +1,5 @@
 #![allow(clippy::unit_arg)]
+use itertools::EitherOrBoth;
 use itertools::Itertools;
 use nom::branch::*;
 use nom::bytes::complete::*;
@@ -542,7 +543,27 @@ impl<'code> VM<'code> {
 
                             let Instruction::FunctionDefinition { signature, body } = function_definition else { unreachable!() };
 
+                            self.locals.push({
+                                let mut locals = HashMap::<Ident<'code>, Value<'code>>::default();
+
+                                for either_or_both in
+                                    signature.args.iter().copied().zip_longest(args)
+                                {
+                                    match either_or_both {
+                                        EitherOrBoth::Both(ident, value) => {
+                                            locals.insert(ident, value.clone());
+                                        }
+
+                                        _ => panic!("argument counts does not match"),
+                                    }
+                                }
+
+                                locals
+                            });
+
                             self.run_instructions_local(&body, global_instructions);
+
+                            self.locals.pop();
 
                             continue;
                         }

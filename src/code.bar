@@ -1,14 +1,13 @@
-{ print-1-to-10()
-    1 > i
+{ print-a-to-b(a b)
     :loop
-        le(i 10) > @if
+        le(a b) > @if
         goifn loop-end
 
-        println(i)
+        println(a)
 
-        sum(i 1) > i
+        sum(a 1) > a
         go loop
     :loop-end
 }
 
-print-1-to-10()
+print-a-to-b(4 16)
