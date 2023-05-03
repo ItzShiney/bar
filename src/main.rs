@@ -10,6 +10,7 @@ use nom::number::complete::*;
 use nom::sequence::*;
 use nom::IResult;
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::hash_map;
 use std::collections::HashMap;
 use std::fmt;
@@ -378,7 +379,7 @@ pub fn instructions(input: &str) -> IResult<&str, Vec<Instruction>> {
     delimited(spaces, many0(instruction), spaces)(input)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value<'code> {
     None,
     Bool(bool),
@@ -393,6 +394,32 @@ impl Display for Value<'_> {
             Self::Bool(bool) => write!(f, "{}", bool),
             Self::Number(number) => write!(f, "{}", number),
             Self::String(ref string) => write!(f, "{}", string),
+        }
+    }
+}
+
+impl PartialOrd for Value<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match self {
+            Self::None => match other {
+                Self::None => Some(Ordering::Equal),
+                _ => None,
+            },
+
+            Self::Bool(lhs) => match other {
+                Self::Bool(rhs) => lhs.partial_cmp(rhs),
+                _ => None,
+            },
+
+            Self::Number(lhs) => match other {
+                Self::Number(rhs) => lhs.partial_cmp(rhs),
+                _ => None,
+            },
+
+            Self::String(lhs) => match other {
+                Self::String(rhs) => lhs.partial_cmp(rhs),
+                _ => None,
+            },
         }
     }
 }
@@ -416,7 +443,15 @@ impl<'code> VM<'code> {
         Ok(self.run_instructions(&instructions))
     }
 
-    pub fn run_instructions(&mut self, instructions: &[Instruction<'code>]) {
+    pub fn run_instructions<'s>(&'s mut self, instructions: &'s [Instruction<'code>]) {
+        self.run_instructions_local(instructions, instructions)
+    }
+
+    fn run_instructions_local<'s>(
+        &'s mut self,
+        instructions: &'s [Instruction<'code>],
+        global_instructions: &'s [Instruction<'code>],
+    ) {
         let mut instruction_idx = 0;
 
         'run: while instruction_idx < instructions.len() {
@@ -475,7 +510,42 @@ impl<'code> VM<'code> {
                             Value::None
                         }
 
-                        _ => panic!("function '{}' was not found", ident),
+                        "le" => Value::Bool(args.tuple_windows().all(|(a, b)| a <= b)),
+
+                        _ => {
+                            fn find_function_definition<'code, 's>(
+                                ident: Ident<'code>,
+                                mut instructions: impl Iterator<Item = &'s Instruction<'code>>,
+                            ) -> Option<&'s Instruction<'code>> {
+                                instructions.find(
+                                    |&instruction| match *instruction {
+                                        Instruction::FunctionDefinition {
+                                            signature: FunctionSignature { ident: definition_ident, .. },
+                                            ..
+                                        } if definition_ident == ident => true,
+                                        _ => false,
+                                    },
+                                )
+                            }
+
+                            let Some(function_definition) = (match ident {
+                                VarIdent::Global(ident) => {
+                                    find_function_definition(ident, global_instructions.iter())
+                                }
+
+                                VarIdent::Local(ident) => {
+                                    find_function_definition(ident, instructions.iter().chain(global_instructions))
+                                }
+                            }) else {
+                                panic!("function '{}' was not found", ident);
+                            };
+
+                            let Instruction::FunctionDefinition { signature, body } = function_definition else { unreachable!() };
+
+                            self.run_instructions_local(&body, global_instructions);
+
+                            continue;
+                        }
                     };
 
                     if let Some(out) = out {
@@ -503,7 +573,7 @@ impl<'code> VM<'code> {
                     }
 
                     instruction_idx = 0;
-                    '_search: while instruction_idx < instructions.len() {
+                    while instruction_idx < instructions.len() {
                         let instruction = &instructions[instruction_idx];
                         instruction_idx += 1;
 

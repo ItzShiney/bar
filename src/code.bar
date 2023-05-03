@@ -1,5 +1,14 @@
-true > @if
+{ print-1-to-10()
+    1 > i
+    :loop
+        le(i 10) > @if
+        goifn loop-end
 
-goif a
-    print("@if was false")
-:a
+        println(i)
+
+        sum(i 1) > i
+        go loop
+    :loop-end
+}
+
+print-1-to-10()
