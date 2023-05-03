@@ -1,4 +1,5 @@
 #![allow(clippy::unit_arg)]
+use enum_as_inner::EnumAsInner;
 use itertools::EitherOrBoth;
 use itertools::Itertools;
 use nom::branch::*;
@@ -92,7 +93,7 @@ impl Debug for ValueSource<'_> {
 pub struct FunctionSignature<'code> {
     pub ident: Ident<'code>,
     pub args: Vec<Ident<'code>>,
-    pub out: Option<VarIdent<'code>>,
+    pub out: Option<Ident<'code>>,
 }
 
 impl Display for FunctionSignature<'_> {
@@ -302,21 +303,19 @@ pub fn values(input: &str) -> IResult<&str, Vec<ValueSource>> {
 }
 
 pub fn instruction(input: &str) -> IResult<&str, Instruction> {
-    fn out(input: &str) -> IResult<&str, VarIdent> {
-        let (input, (_, out)) = (wtag(">"), var_ident).parse(input)?;
-
-        Ok((input, out))
-    }
-
     fn set_value(input: &str) -> IResult<&str, Instruction> {
-        let (input, (value, out)) = (value, out).parse(input)?;
+        let (input, (value, out)) = (value, preceded(wtag(">"), var_ident)).parse(input)?;
 
         Ok((input, Instruction::SetValue { value, out }))
     }
 
     fn function_call(input: &str) -> IResult<&str, Instruction> {
-        let (input, (ident, _, args, _, out)) =
-            (var_ident, wtag("("), values, wtag(")"), opt(out)).parse(input)?;
+        let (input, (ident, args, out)) = (
+            var_ident,
+            delimited(wtag("("), values, wtag(")")),
+            opt(preceded(wtag(">"), var_ident)),
+        )
+            .parse(input)?;
 
         Ok((input, Instruction::FunctionCall { ident, args, out }))
     }
@@ -356,7 +355,7 @@ pub fn instruction(input: &str) -> IResult<&str, Instruction> {
             }
 
             let (input, (ident, args, out)) =
-                (ident, function_signature_args, opt(out)).parse(input)?;
+                (ident, function_signature_args, opt(preceded(wtag(">"), ident))).parse(input)?;
 
             Ok((input, FunctionSignature { ident, args, out }))
         }
@@ -380,7 +379,7 @@ pub fn instructions(input: &str) -> IResult<&str, Vec<Instruction>> {
     delimited(spaces, many0(instruction), spaces)(input)
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, EnumAsInner)]
 pub enum Value<'code> {
     None,
     Bool(bool),
@@ -470,16 +469,27 @@ impl<'code> VM<'code> {
                 }
 
                 Instruction::FunctionCall { ident, ref args, out } => {
-                    let args = args.iter().map(|value| self.value(value).unwrap());
+                    let mut args = args.iter().map(|value| self.value(value).unwrap());
 
                     let res = match ident.into() {
                         "sum" => {
                             let mut res = 0.;
                             for arg in args {
-                                match arg {
-                                    Value::Number(number) => res += number,
-                                    _ => panic!("expected a number, got '{}'", arg),
-                                }
+                                res += arg.as_number().expect("expected a number");
+                            }
+
+                            Value::Number(res)
+                        }
+
+                        "sub" => {
+                            let mut res = *args
+                                .next()
+                                .expect("expected an argument")
+                                .as_number()
+                                .expect("expected a number");
+
+                            for arg in args {
+                                res -= arg.as_number().expect("expected a number");
                             }
 
                             Value::Number(res)
@@ -563,7 +573,16 @@ impl<'code> VM<'code> {
 
                             self.run_instructions_local(&body, global_instructions);
 
-                            self.locals.pop();
+                            let mut locals = self.locals.pop().unwrap();
+                            if let Some(out_ident) = signature.out {
+                                let Some(out_value) = locals.remove(out_ident) else {
+                                    panic!("expected local variable '{}' to exist, since it is being returned", out_ident);
+                                };
+
+                                if let Some(out) = out {
+                                    self.var_entry(out).insert(out_value);
+                                }
+                            }
 
                             continue;
                         }
@@ -580,17 +599,29 @@ impl<'code> VM<'code> {
                     match type_ {
                         JumpType::Forced => {}
 
-                        JumpType::If => match self.globals["if"] {
-                            Value::Bool(true) => {}
-                            Value::Bool(false) => continue,
-                            _ => panic!("@if should be a bool"),
-                        },
+                        JumpType::If => {
+                            if !*self
+                                .globals
+                                .get("if")
+                                .expect("expected global variable 'if' to exist, since it is used by 'goif' statement")
+                                .as_bool()
+                                .expect("expected '@if' to be a bool")
+                            {
+                                continue;
+                            }
+                        }
 
-                        JumpType::IfNot => match self.globals["if"] {
-                            Value::Bool(false) => {}
-                            Value::Bool(true) => continue,
-                            _ => panic!("@if should be a bool"),
-                        },
+                        JumpType::IfNot => {
+                            if *self
+                                .globals
+                                .get("if")
+                                .expect("expected global variable 'if' to exist, since it is used by 'goifn' statement")
+                                .as_bool()
+                                .expect("expected '@if' to be a bool")
+                            {
+                                continue;
+                            }
+                        }
                     }
 
                     instruction_idx = 0;

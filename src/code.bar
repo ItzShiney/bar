@@ -1,4 +1,7 @@
-{ print-a-to-b(a b)
+{ print-a-to-b(a b) > count
+    sub(b a) > count
+    sum(count 1) > count
+
     :loop
         le(a b) > @if
         goifn loop-end
@@ -10,4 +13,5 @@
     :loop-end
 }
 
-print-a-to-b(4 16)
+print-a-to-b(123.4 155.6) > count
+println(count)
