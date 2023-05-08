@@ -1,17 +1,13 @@
-{ print-a-to-b(a b) > count
-    sub(b a) > count
-    sum(count 1) > count
-
-    :loop
-        le(a b) > @if
-        goifn loop-end
-
-        println(a)
-
-        sum(a 1) > a
-        go loop
-    :loop-end
+{ f() > b
+    1 > b
 }
 
-print-a-to-b(123.4 155.6) > count
-println(count)
+f()
+
+/* // custom 'sum'
+{ sum(a b) > c
+    sub(a b) > c
+}
+
+sum(5 3) > eax
+print(eax) */

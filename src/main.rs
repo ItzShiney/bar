@@ -10,6 +10,7 @@ use nom::combinator::*;
 use nom::multi::*;
 use nom::number::complete::*;
 use nom::sequence::*;
+use nom::Finish;
 use nom::IResult;
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -304,7 +305,7 @@ pub fn values(input: &str) -> IResult<&str, Vec<ValueSource>> {
 
 pub fn instruction(input: &str) -> IResult<&str, Instruction> {
     fn set_value(input: &str) -> IResult<&str, Instruction> {
-        let (input, (value, out)) = (value, preceded(wtag(">"), var_ident)).parse(input)?;
+        let (input, (value, out)) = separated_pair(value, wtag(">"), cut(var_ident))(input)?;
 
         Ok((input, Instruction::SetValue { value, out }))
     }
@@ -313,7 +314,7 @@ pub fn instruction(input: &str) -> IResult<&str, Instruction> {
         let (input, (ident, args, out)) = (
             var_ident,
             delimited(wtag("("), values, wtag(")")),
-            opt(preceded(wtag(">"), var_ident)),
+            opt(preceded(wtag(">"), cut(var_ident))),
         )
             .parse(input)?;
 
@@ -438,7 +439,7 @@ pub struct VM<'code> {
 
 impl<'code> VM<'code> {
     pub fn run(&mut self, code: &'code str) -> Result<(), CompileError> {
-        let (_, instructions) = instructions(code).ok().ok_or(CompileError)?;
+        let (_, instructions) = instructions(code).finish().unwrap();
 
         Ok(self.run_instructions(&instructions))
     }
@@ -574,17 +575,16 @@ impl<'code> VM<'code> {
                             self.run_instructions_local(&body, global_instructions);
 
                             let mut locals = self.locals.pop().unwrap();
+
                             if let Some(out_ident) = signature.out {
                                 let Some(out_value) = locals.remove(out_ident) else {
                                     panic!("expected local variable '{}' to exist, since it is being returned", out_ident);
                                 };
 
-                                if let Some(out) = out {
-                                    self.var_entry(out).insert(out_value);
-                                }
+                                out_value
+                            } else {
+                                Value::None
                             }
-
-                            continue;
                         }
                     };
 
