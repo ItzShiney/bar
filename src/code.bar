@@ -1,13 +1,7 @@
-{ f() > b
-    1 > b
-}
-
-f()
-
-/* // custom 'sum'
+// custom 'sum' overrides default
 { sum(a b) > c
     sub(a b) > c
 }
 
-sum(5 3) > eax
-print(eax) */
+sum(5 3) > a
+print(a)

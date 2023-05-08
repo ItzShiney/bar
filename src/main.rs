@@ -470,121 +470,125 @@ impl<'code> VM<'code> {
                 }
 
                 Instruction::FunctionCall { ident, ref args, out } => {
+                    fn find_function_definition<'code, 's>(
+                        ident: Ident<'code>,
+                        mut instructions: impl Iterator<Item = &'s Instruction<'code>>,
+                    ) -> Option<&'s Instruction<'code>> {
+                        instructions.find(|&instruction| match *instruction {
+                            Instruction::FunctionDefinition {
+                                signature: FunctionSignature { ident: definition_ident, .. },
+                                ..
+                            } if definition_ident == ident => true,
+                            _ => false,
+                        })
+                    }
+
                     let mut args = args.iter().map(|value| self.value(value).unwrap());
 
-                    let res = match ident.into() {
-                        "sum" => {
-                            let mut res = 0.;
-                            for arg in args {
-                                res += arg.as_number().expect("expected a number");
+                    let res = {
+                        let maybe_function_definition = match ident {
+                            VarIdent::Global(ident) => {
+                                find_function_definition(ident, global_instructions.iter().rev())
                             }
 
-                            Value::Number(res)
-                        }
+                            VarIdent::Local(ident) => find_function_definition(
+                                ident,
+                                instructions.iter().rev().chain(global_instructions.iter().rev()),
+                            ),
+                        };
 
-                        "sub" => {
-                            let mut res = *args
-                                .next()
-                                .expect("expected an argument")
-                                .as_number()
-                                .expect("expected a number");
+                        match maybe_function_definition {
+                            Some(function_definition) => {
+                                let Instruction::FunctionDefinition { signature, body } = function_definition else { unreachable!() };
 
-                            for arg in args {
-                                res -= arg.as_number().expect("expected a number");
-                            }
+                                self.locals.push({
+                                    let mut locals =
+                                        HashMap::<Ident<'code>, Value<'code>>::default();
 
-                            Value::Number(res)
-                        }
+                                    for either_or_both in
+                                        signature.args.iter().copied().zip_longest(args)
+                                    {
+                                        match either_or_both {
+                                            EitherOrBoth::Both(ident, value) => {
+                                                locals.insert(ident, value.clone());
+                                            }
 
-                        "join" => {
-                            let mut res = String::default();
-                            for arg in args {
-                                write!(&mut res, "{}", arg).unwrap();
-                            }
-
-                            Value::String(Cow::Owned(res))
-                        }
-
-                        "print" => {
-                            for arg in args {
-                                print!("{}", arg);
-                            }
-
-                            Value::None
-                        }
-
-                        "println" => {
-                            for arg in args {
-                                print!("{}", arg);
-                            }
-                            println!();
-
-                            Value::None
-                        }
-
-                        "le" => Value::Bool(args.tuple_windows().all(|(a, b)| a <= b)),
-
-                        _ => {
-                            fn find_function_definition<'code, 's>(
-                                ident: Ident<'code>,
-                                mut instructions: impl Iterator<Item = &'s Instruction<'code>>,
-                            ) -> Option<&'s Instruction<'code>> {
-                                instructions.find(
-                                    |&instruction| match *instruction {
-                                        Instruction::FunctionDefinition {
-                                            signature: FunctionSignature { ident: definition_ident, .. },
-                                            ..
-                                        } if definition_ident == ident => true,
-                                        _ => false,
-                                    },
-                                )
-                            }
-
-                            let Some(function_definition) = (match ident {
-                                VarIdent::Global(ident) => {
-                                    find_function_definition(ident, global_instructions.iter())
-                                }
-
-                                VarIdent::Local(ident) => {
-                                    find_function_definition(ident, instructions.iter().chain(global_instructions))
-                                }
-                            }) else {
-                                panic!("function '{}' was not found", ident);
-                            };
-
-                            let Instruction::FunctionDefinition { signature, body } = function_definition else { unreachable!() };
-
-                            self.locals.push({
-                                let mut locals = HashMap::<Ident<'code>, Value<'code>>::default();
-
-                                for either_or_both in
-                                    signature.args.iter().copied().zip_longest(args)
-                                {
-                                    match either_or_both {
-                                        EitherOrBoth::Both(ident, value) => {
-                                            locals.insert(ident, value.clone());
+                                            _ => panic!("argument counts do not match"),
                                         }
-
-                                        _ => panic!("argument counts does not match"),
                                     }
+
+                                    locals
+                                });
+
+                                self.run_instructions_local(&body, global_instructions);
+
+                                let mut locals = self.locals.pop().unwrap();
+
+                                if let Some(out_ident) = signature.out {
+                                    let Some(out_value) = locals.remove(out_ident) else {
+                                        panic!("expected local variable '{}' to exist, since it is being returned", out_ident);
+                                    };
+
+                                    out_value
+                                } else {
+                                    Value::None
+                                }
+                            }
+
+                            None => match ident.into() {
+                                "sum" => {
+                                    let mut res = 0.;
+                                    for arg in args {
+                                        res += arg.as_number().expect("expected a number");
+                                    }
+
+                                    Value::Number(res)
                                 }
 
-                                locals
-                            });
+                                "sub" => {
+                                    let mut res = *args
+                                        .next()
+                                        .expect("expected an argument")
+                                        .as_number()
+                                        .expect("expected a number");
 
-                            self.run_instructions_local(&body, global_instructions);
+                                    for arg in args {
+                                        res -= arg.as_number().expect("expected a number");
+                                    }
 
-                            let mut locals = self.locals.pop().unwrap();
+                                    Value::Number(res)
+                                }
 
-                            if let Some(out_ident) = signature.out {
-                                let Some(out_value) = locals.remove(out_ident) else {
-                                    panic!("expected local variable '{}' to exist, since it is being returned", out_ident);
-                                };
+                                "join" => {
+                                    let mut res = String::default();
+                                    for arg in args {
+                                        write!(&mut res, "{}", arg).unwrap();
+                                    }
 
-                                out_value
-                            } else {
-                                Value::None
-                            }
+                                    Value::String(Cow::Owned(res))
+                                }
+
+                                "print" => {
+                                    for arg in args {
+                                        print!("{}", arg);
+                                    }
+
+                                    Value::None
+                                }
+
+                                "println" => {
+                                    for arg in args {
+                                        print!("{}", arg);
+                                    }
+                                    println!();
+
+                                    Value::None
+                                }
+
+                                "le" => Value::Bool(args.tuple_windows().all(|(a, b)| a <= b)),
+
+                                _ => panic!("function '{}' was not found", ident),
+                            },
                         }
                     };
 
