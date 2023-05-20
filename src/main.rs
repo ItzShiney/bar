@@ -12,6 +12,7 @@ use nom::number::complete::*;
 use nom::sequence::*;
 use nom::IResult;
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::hash_map;
 use std::collections::HashMap;
@@ -19,6 +20,7 @@ use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Write;
+use std::rc::Rc;
 
 pub trait Insert {
     type V;
@@ -68,22 +70,57 @@ impl Debug for VarIdent<'_> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Derefs<'code> {
+    pub ident: VarIdent<'code>,
+    pub times: usize,
+}
+
 #[derive(Clone)]
 pub enum ValueSource<'code> {
     Ident(VarIdent<'code>),
     Literal(Value<'code>),
+    TakeRef(VarIdent<'code>),
+    Derefs(Derefs<'code>),
 }
 
 impl Display for ValueSource<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
+        match *self {
             Self::Ident(ident) => write!(f, "{}", ident),
-            Self::Literal(literal) => write!(f, "{}", literal),
+            Self::Literal(ref literal) => write!(f, "{}", literal),
+            Self::TakeRef(ident) => write!(f, "?{}", ident),
+            Self::Derefs(Derefs { ident, times }) => {
+                write!(f, "{}{}", "!".repeat(times), ident)
+            }
         }
     }
 }
 
 impl Debug for ValueSource<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        Display::fmt(self, f)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum Out<'code> {
+    Ident(VarIdent<'code>),
+    Derefs(Derefs<'code>),
+}
+
+impl Display for Out<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Self::Ident(ident) => write!(f, "{}", ident),
+            Self::Derefs(Derefs { ident, times }) => {
+                write!(f, "{}{}", "!".repeat(times), ident)
+            }
+        }
+    }
+}
+
+impl Debug for Out<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         Display::fmt(self, f)
     }
@@ -125,27 +162,12 @@ pub enum JumpType {
 
 #[derive(Clone)]
 pub enum Instruction<'code> {
-    SetValue {
-        value: ValueSource<'code>,
-        out: VarIdent<'code>,
-    },
-    FunctionCall {
-        ident: VarIdent<'code>,
-        args: Vec<ValueSource<'code>>,
-        out: Option<VarIdent<'code>>,
-    },
-    LabelDefinition {
-        ident: Ident<'code>,
-    },
-    Go {
-        type_: JumpType,
-        label: Ident<'code>,
-    },
+    SetValue { value: ValueSource<'code>, out: Out<'code> },
+    FunctionCall { ident: VarIdent<'code>, args: Vec<ValueSource<'code>>, out: Option<Out<'code>> },
+    LabelDefinition { ident: Ident<'code> },
+    Go { type_: JumpType, label: Ident<'code> },
     Return,
-    FunctionDefinition {
-        signature: FunctionSignature<'code>,
-        body: Vec<Instruction<'code>>,
-    },
+    FunctionDefinition { signature: FunctionSignature<'code>, body: Vec<Instruction<'code>> },
 }
 
 impl Display for Instruction<'_> {
@@ -260,6 +282,12 @@ pub fn var_ident(input: &str) -> IResult<&str, VarIdent> {
     Ok((input, ident_f(ident)))
 }
 
+pub fn derefs(input: &str) -> IResult<&str, Derefs> {
+    let (input, times) = map(many1(wtag("!")), |v| v.len())(input)?;
+
+    map(cut(var_ident), move |ident| Derefs { ident, times })(input)
+}
+
 pub fn label_ident(input: &str) -> IResult<&str, Ident> {
     ident(input)
 }
@@ -282,6 +310,14 @@ pub fn value(input: &str) -> IResult<&str, ValueSource> {
         map(var_ident, ValueSource::Ident)(input)
     }
 
+    fn take_ref(input: &str) -> IResult<&str, ValueSource> {
+        preceded(wtag("?"), cut(map(var_ident, ValueSource::TakeRef)))(input)
+    }
+
+    fn derefs_ident(input: &str) -> IResult<&str, ValueSource> {
+        map(derefs, ValueSource::Derefs)(input)
+    }
+
     fn number(input: &str) -> IResult<&str, ValueSource> {
         skip_spaces!(input);
         let (input, res) = double(input)?;
@@ -295,7 +331,7 @@ pub fn value(input: &str) -> IResult<&str, ValueSource> {
         Ok((input, ValueSource::Literal(Value::String(Cow::Borrowed(res)))))
     }
 
-    alt((keyword_value, var, number, string))(input)
+    alt((keyword_value, var, take_ref, derefs_ident, number, string))(input)
 }
 
 pub fn values(input: &str) -> IResult<&str, Vec<ValueSource>> {
@@ -303,19 +339,28 @@ pub fn values(input: &str) -> IResult<&str, Vec<ValueSource>> {
 }
 
 pub fn instruction(input: &str) -> IResult<&str, Instruction> {
+    fn instruction_out(input: &str) -> IResult<&str, Out> {
+        fn out_ident(input: &str) -> IResult<&str, Out> {
+            map(var_ident, Out::Ident)(input)
+        }
+
+        fn out_derefs(input: &str) -> IResult<&str, Out> {
+            map(derefs, Out::Derefs)(input)
+        }
+
+        preceded(wtag(">"), cut(alt((out_ident, out_derefs))))(input)
+    }
+
     fn set_value(input: &str) -> IResult<&str, Instruction> {
-        let (input, (value, out)) = separated_pair(value, wtag(">"), cut(var_ident))(input)?;
+        let (input, (value, out)) = pair(value, instruction_out)(input)?;
 
         Ok((input, Instruction::SetValue { value, out }))
     }
 
     fn function_call(input: &str) -> IResult<&str, Instruction> {
-        let (input, (ident, args, out)) = (
-            var_ident,
-            delimited(wtag("("), cut(values), cut(wtag(")"))),
-            opt(preceded(wtag(">"), cut(var_ident))),
-        )
-            .parse(input)?;
+        let (input, (ident, args, out)) =
+            (var_ident, delimited(wtag("("), cut(values), cut(wtag(")"))), opt(instruction_out))
+                .parse(input)?;
 
         Ok((input, Instruction::FunctionCall { ident, args, out }))
     }
@@ -376,7 +421,7 @@ pub fn instruction(input: &str) -> IResult<&str, Instruction> {
 }
 
 pub fn instructions(input: &str) -> IResult<&str, Vec<Instruction>> {
-    delimited(spaces, many0(instruction), spaces)(input)
+    terminated(many0(instruction), cut(spaces))(input)
 }
 
 #[derive(Debug, Clone, PartialEq, EnumAsInner)]
@@ -385,6 +430,7 @@ pub enum Value<'code> {
     Bool(bool),
     Number(f64),
     String(Cow<'code, str>),
+    Ref(ValueRef<'code>),
 }
 
 impl From<bool> for Value<'_> {
@@ -431,13 +477,14 @@ impl Display for Value<'_> {
             Self::Bool(bool) => write!(f, "{}", bool),
             Self::Number(number) => write!(f, "{}", number),
             Self::String(ref string) => write!(f, "{}", string),
+            Self::Ref(ref value) => write!(f, "?{}", value.borrow()),
         }
     }
 }
 
 impl PartialOrd for Value<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match self {
+        match *self {
             Self::None => match other {
                 Self::None => Some(Ordering::Equal),
                 _ => None,
@@ -453,12 +500,23 @@ impl PartialOrd for Value<'_> {
                 _ => None,
             },
 
-            Self::String(lhs) => match other {
+            Self::String(ref lhs) => match other {
                 Self::String(rhs) => lhs.partial_cmp(rhs),
+                _ => None,
+            },
+
+            Self::Ref(ref lhs) => match other {
+                Self::Ref(ref rhs) => lhs.partial_cmp(rhs),
                 _ => None,
             },
         }
     }
+}
+
+pub type ValueRef<'code> = Rc<RefCell<Value<'code>>>;
+
+pub fn value_ref(value: Value<'_>) -> ValueRef {
+    Rc::new(value.into())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -469,8 +527,8 @@ pub struct UnknownVariable;
 
 #[derive(Default)]
 pub struct VM<'code> {
-    pub globals: HashMap<Ident<'code>, Value<'code>>,
-    locals: Vec<HashMap<Ident<'code>, Value<'code>>>,
+    pub globals: HashMap<Ident<'code>, ValueRef<'code>>,
+    locals: Vec<HashMap<Ident<'code>, ValueRef<'code>>>,
 }
 
 impl<'code> VM<'code> {
@@ -497,11 +555,21 @@ impl<'code> VM<'code> {
 
             match *instruction {
                 Instruction::SetValue { ref value, out } => {
-                    let value = self.value(value).expect("expected variable to exist").clone();
+                    let value = self.value(value).expect("expected the variable to exist").clone();
 
                     match out {
-                        VarIdent::Global(ident) => self.globals.insert(ident, value),
-                        VarIdent::Local(ident) => self.locals_mut().insert(ident, value),
+                        Out::Ident(ident) => {
+                            let value = value_ref(value);
+
+                            match ident {
+                                VarIdent::Global(ident) => self.globals.insert(ident, value),
+                                VarIdent::Local(ident) => self.locals_mut().insert(ident, value),
+                            };
+                        }
+
+                        Out::Derefs(derefs) => {
+                            *self.derefs(derefs).borrow_mut() = value;
+                        }
                     };
                 }
 
@@ -510,12 +578,13 @@ impl<'code> VM<'code> {
                         ident: Ident<'code>,
                         mut instructions: impl Iterator<Item = &'s Instruction<'code>>,
                     ) -> Option<&'s Instruction<'code>> {
-                        instructions.find(|&instruction| match *instruction {
-                            Instruction::FunctionDefinition {
-                                signature: FunctionSignature { ident: definition_ident, .. },
-                                ..
-                            } if definition_ident == ident => true,
-                            _ => false,
+                        instructions.find(|&instruction| {
+                            matches!(*instruction,
+                                Instruction::FunctionDefinition {
+                                    signature: FunctionSignature { ident: definition_ident, .. },
+                                    ..
+                                } if definition_ident == ident
+                            )
                         })
                     }
 
@@ -539,14 +608,14 @@ impl<'code> VM<'code> {
 
                                 self.locals.push({
                                     let mut locals =
-                                        HashMap::<Ident<'code>, Value<'code>>::default();
+                                        HashMap::<Ident<'code>, ValueRef<'code>>::default();
 
                                     for either_or_both in
                                         signature.args.iter().copied().zip_longest(args)
                                     {
                                         match either_or_both {
                                             EitherOrBoth::Both(ident, value) => {
-                                                locals.insert(ident, value.clone());
+                                                locals.insert(ident, value_ref(value.clone()));
                                             }
 
                                             _ => panic!("argument counts do not match"),
@@ -556,7 +625,7 @@ impl<'code> VM<'code> {
                                     locals
                                 });
 
-                                self.run_instructions_local(&body, global_instructions);
+                                self.run_instructions_local(body, global_instructions);
 
                                 let mut locals = self.locals.pop().unwrap();
 
@@ -565,7 +634,7 @@ impl<'code> VM<'code> {
                                         panic!("expected local variable '{}' to exist, since it is being returned", out_ident);
                                     };
 
-                                    out_value
+                                    (*out_value).clone().into_inner()
                                 } else {
                                     Value::None
                                 }
@@ -625,7 +694,7 @@ impl<'code> VM<'code> {
                                     let (a, b) =
                                         args.collect_tuple().expect("invalid arguments count");
 
-                                    a.partial_cmp(b).map(Value::from).into()
+                                    a.partial_cmp(&b).map(Value::from).into()
                                 }
 
                                 "eq" => Value::Bool(args.tuple_windows().all(|(a, b)| a == b)),
@@ -641,7 +710,10 @@ impl<'code> VM<'code> {
                     };
 
                     if let Some(out) = out {
-                        self.var_entry(out).insert(res);
+                        match out {
+                            Out::Ident(ident) => self.var_entry(ident).insert(value_ref(res)),
+                            Out::Derefs(derefs) => *self.derefs(derefs).borrow_mut() = res,
+                        }
                     }
                 }
 
@@ -656,6 +728,7 @@ impl<'code> VM<'code> {
                                 .globals
                                 .get("if")
                                 .expect("expected global variable 'if' to exist, since it is used by 'goif' statement")
+                                .borrow()
                                 .as_bool()
                                 .expect("expected '@if' to be a bool")
                             {
@@ -668,6 +741,7 @@ impl<'code> VM<'code> {
                                 .globals
                                 .get("if")
                                 .expect("expected global variable 'if' to exist, since it is used by 'goifn' statement")
+                                .borrow()
                                 .as_bool()
                                 .expect("expected '@if' to be a bool")
                             {
@@ -702,15 +776,15 @@ impl<'code> VM<'code> {
         }
     }
 
-    pub fn locals(&self) -> &HashMap<Ident<'code>, Value<'code>> {
+    pub fn locals(&self) -> &HashMap<Ident<'code>, ValueRef<'code>> {
         self.locals.last().unwrap_or(&self.globals)
     }
 
-    pub fn locals_mut(&mut self) -> &mut HashMap<Ident<'code>, Value<'code>> {
+    pub fn locals_mut(&mut self) -> &mut HashMap<Ident<'code>, ValueRef<'code>> {
         self.locals.last_mut().unwrap_or(&mut self.globals)
     }
 
-    pub fn var(&self, ident: VarIdent<'code>) -> Result<&Value<'code>, UnknownVariable> {
+    pub fn var(&self, ident: VarIdent<'code>) -> Result<&ValueRef<'code>, UnknownVariable> {
         match ident {
             VarIdent::Global(ident) => self.globals.get(ident),
             VarIdent::Local(ident) => self.locals().get(ident),
@@ -721,7 +795,7 @@ impl<'code> VM<'code> {
     pub fn var_entry(
         &mut self,
         ident: VarIdent<'code>,
-    ) -> hash_map::Entry<&'code str, Value<'code>> {
+    ) -> hash_map::Entry<&'code str, ValueRef<'code>> {
         match ident {
             VarIdent::Global(ident) => self.globals.entry(ident),
             VarIdent::Local(ident) => self.locals_mut().entry(ident),
@@ -731,11 +805,24 @@ impl<'code> VM<'code> {
     pub fn value<'value>(
         &'value self,
         value: &'value ValueSource<'code>,
-    ) -> Result<&'value Value<'code>, UnknownVariable> {
+    ) -> Result<Value<'code>, UnknownVariable> {
         match *value {
-            ValueSource::Ident(ident) => self.var(ident),
-            ValueSource::Literal(ref literal) => Ok(literal),
+            ValueSource::Ident(ident) => self.var(ident).map(|value| value.borrow().clone()),
+            ValueSource::Literal(ref literal) => Ok(literal.clone()),
+            ValueSource::TakeRef(ident) => Ok(Value::Ref(self.var(ident)?.clone())),
+            ValueSource::Derefs(derefs) => todo!(),
         }
+    }
+
+    pub fn derefs(&self, Derefs { ident, times }: Derefs<'code>) -> ValueRef<'code> {
+        let mut res = self.var(ident).expect("expected the variable to exist").clone();
+
+        for _ in 1..=times {
+            let new_res = (*res.borrow()).as_ref().cloned().expect("expected a reference");
+            res = new_res;
+        }
+
+        res
     }
 }
 
