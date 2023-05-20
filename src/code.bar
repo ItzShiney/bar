@@ -1,4 +1,4 @@
-1 > a
-?a > b
-sum(!b 1) > !b
-print(!b)
+list(1 2 3) > a
+print(a)
+push(?a 4)
+print(a)

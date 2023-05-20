@@ -424,13 +424,14 @@ pub fn instructions(input: &str) -> IResult<&str, Vec<Instruction>> {
     terminated(many0(instruction), cut(spaces))(input)
 }
 
-#[derive(Debug, Clone, PartialEq, EnumAsInner)]
+#[derive(Clone, PartialEq, EnumAsInner)]
 pub enum Value<'code> {
     None,
     Bool(bool),
     Number(f64),
     String(Cow<'code, str>),
     Ref(ValueRef<'code>),
+    List(Vec<Value<'code>>),
 }
 
 impl From<bool> for Value<'_> {
@@ -478,37 +479,36 @@ impl Display for Value<'_> {
             Self::Number(number) => write!(f, "{}", number),
             Self::String(ref string) => write!(f, "{}", string),
             Self::Ref(ref value) => write!(f, "?{}", value.borrow()),
+            Self::List(ref value) => write!(f, "{:?}", value),
         }
+    }
+}
+
+impl Debug for Value<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        Display::fmt(&self, f)
     }
 }
 
 impl PartialOrd for Value<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match *self {
-            Self::None => match other {
-                Self::None => Some(Ordering::Equal),
-                _ => None,
-            },
+        match (self, other) {
+            (Self::None, Self::None) => Some(Ordering::Equal),
+            (Self::Bool(lhs), Self::Bool(rhs)) => lhs.partial_cmp(rhs),
+            (Self::Number(lhs), Self::Number(rhs)) => lhs.partial_cmp(rhs),
+            (Self::String(lhs), Self::String(rhs)) => lhs.partial_cmp(rhs),
+            (Self::Ref(lhs), Self::Ref(rhs)) => lhs.partial_cmp(rhs),
+            (Self::List(lhs), Self::List(rhs)) => lhs.partial_cmp(rhs),
 
-            Self::Bool(lhs) => match other {
-                Self::Bool(rhs) => lhs.partial_cmp(rhs),
-                _ => None,
-            },
-
-            Self::Number(lhs) => match other {
-                Self::Number(rhs) => lhs.partial_cmp(rhs),
-                _ => None,
-            },
-
-            Self::String(ref lhs) => match other {
-                Self::String(rhs) => lhs.partial_cmp(rhs),
-                _ => None,
-            },
-
-            Self::Ref(ref lhs) => match other {
-                Self::Ref(ref rhs) => lhs.partial_cmp(rhs),
-                _ => None,
-            },
+            (
+                Self::None
+                | Self::Bool(_)
+                | Self::Number(_)
+                | Self::String(_)
+                | Self::Ref(_)
+                | Self::List(_),
+                _,
+            ) => None,
         }
     }
 }
@@ -704,6 +704,9 @@ impl<'code> VM<'code> {
                                 "gt" => Value::Bool(args.tuple_windows().all(|(a, b)| a > b)),
                                 "le" => Value::Bool(args.tuple_windows().all(|(a, b)| a <= b)),
                                 "ge" => Value::Bool(args.tuple_windows().all(|(a, b)| a >= b)),
+
+                                "list" => Value::List(args.map(Cow::into_owned).collect()),
+                                "push" => todo!(),
 
                                 _ => panic!("function '{}' was not found", ident),
                             },
