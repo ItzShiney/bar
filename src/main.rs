@@ -10,7 +10,6 @@ use nom::combinator::*;
 use nom::multi::*;
 use nom::number::complete::*;
 use nom::sequence::*;
-use nom::Finish;
 use nom::IResult;
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -313,7 +312,7 @@ pub fn instruction(input: &str) -> IResult<&str, Instruction> {
     fn function_call(input: &str) -> IResult<&str, Instruction> {
         let (input, (ident, args, out)) = (
             var_ident,
-            delimited(wtag("("), values, wtag(")")),
+            delimited(wtag("("), cut(values), cut(wtag(")"))),
             opt(preceded(wtag(">"), cut(var_ident))),
         )
             .parse(input)?;
@@ -388,6 +387,43 @@ pub enum Value<'code> {
     String(Cow<'code, str>),
 }
 
+impl From<bool> for Value<'_> {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
+    }
+}
+
+impl From<f64> for Value<'_> {
+    fn from(value: f64) -> Self {
+        Self::Number(value)
+    }
+}
+
+impl From<Ordering> for Value<'_> {
+    fn from(value: Ordering) -> Self {
+        Self::Number(match value {
+            Ordering::Less => -1.,
+            Ordering::Equal => -1.,
+            Ordering::Greater => -1.,
+        })
+    }
+}
+
+impl<'code> From<Cow<'code, str>> for Value<'code> {
+    fn from(value: Cow<'code, str>) -> Self {
+        Self::String(value)
+    }
+}
+
+impl<'code> From<Option<Value<'code>>> for Value<'code> {
+    fn from(value: Option<Value<'code>>) -> Self {
+        match value {
+            Some(value) => value,
+            None => Self::None,
+        }
+    }
+}
+
 impl Display for Value<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
@@ -439,7 +475,7 @@ pub struct VM<'code> {
 
 impl<'code> VM<'code> {
     pub fn run(&mut self, code: &'code str) -> Result<(), CompileError> {
-        let (_, instructions) = instructions(code).finish().unwrap();
+        let (_, instructions) = instructions(code).unwrap();
 
         Ok(self.run_instructions(&instructions))
     }
@@ -568,7 +604,7 @@ impl<'code> VM<'code> {
                                     Value::String(Cow::Owned(res))
                                 }
 
-                                "print" => {
+                                "prin" => {
                                     for arg in args {
                                         print!("{}", arg);
                                     }
@@ -576,7 +612,7 @@ impl<'code> VM<'code> {
                                     Value::None
                                 }
 
-                                "println" => {
+                                "print" => {
                                     for arg in args {
                                         print!("{}", arg);
                                     }
@@ -585,7 +621,19 @@ impl<'code> VM<'code> {
                                     Value::None
                                 }
 
+                                "cmp" => {
+                                    let (a, b) =
+                                        args.collect_tuple().expect("invalid arguments count");
+
+                                    a.partial_cmp(b).map(Value::from).into()
+                                }
+
+                                "eq" => Value::Bool(args.tuple_windows().all(|(a, b)| a == b)),
+                                "ne" => Value::Bool(args.tuple_windows().all(|(a, b)| a != b)),
+                                "lt" => Value::Bool(args.tuple_windows().all(|(a, b)| a < b)),
+                                "gt" => Value::Bool(args.tuple_windows().all(|(a, b)| a > b)),
                                 "le" => Value::Bool(args.tuple_windows().all(|(a, b)| a <= b)),
+                                "ge" => Value::Bool(args.tuple_windows().all(|(a, b)| a >= b)),
 
                                 _ => panic!("function '{}' was not found", ident),
                             },
