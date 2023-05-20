@@ -555,7 +555,8 @@ impl<'code> VM<'code> {
 
             match *instruction {
                 Instruction::SetValue { ref value, out } => {
-                    let value = self.value(value).expect("expected the variable to exist").clone();
+                    let value =
+                        self.value(value).expect("expected the variable to exist").into_owned();
 
                     match out {
                         Out::Ident(ident) => {
@@ -615,7 +616,7 @@ impl<'code> VM<'code> {
                                     {
                                         match either_or_both {
                                             EitherOrBoth::Both(ident, value) => {
-                                                locals.insert(ident, value_ref(value.clone()));
+                                                locals.insert(ident, value_ref(value.into_owned()));
                                             }
 
                                             _ => panic!("argument counts do not match"),
@@ -805,12 +806,12 @@ impl<'code> VM<'code> {
     pub fn value<'value>(
         &'value self,
         value: &'value ValueSource<'code>,
-    ) -> Result<Value<'code>, UnknownVariable> {
+    ) -> Result<Cow<'value, Value<'code>>, UnknownVariable> {
         match *value {
-            ValueSource::Ident(ident) => self.var(ident).map(|value| value.borrow().clone()),
-            ValueSource::Literal(ref literal) => Ok(literal.clone()),
-            ValueSource::TakeRef(ident) => Ok(Value::Ref(self.var(ident)?.clone())),
-            ValueSource::Derefs(derefs) => Ok(self.derefs(derefs).borrow().clone()),
+            ValueSource::Ident(ident) => Ok(Cow::Owned(self.var(ident)?.borrow().clone())),
+            ValueSource::Literal(ref literal) => Ok(Cow::Borrowed(literal)),
+            ValueSource::TakeRef(ident) => Ok(Cow::Owned(Value::Ref(self.var(ident)?.clone()))),
+            ValueSource::Derefs(derefs) => Ok(Cow::Owned(self.derefs(derefs).borrow().clone())),
         }
     }
 
