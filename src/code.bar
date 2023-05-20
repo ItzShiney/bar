@@ -1,5 +1,4 @@
 1 > a
-2 > b
-?a > c
-sum(a b) > !c
-print(a)
+?a > b
+sum(!b 1) > !b
+print(!b)

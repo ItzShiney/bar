@@ -810,7 +810,7 @@ impl<'code> VM<'code> {
             ValueSource::Ident(ident) => self.var(ident).map(|value| value.borrow().clone()),
             ValueSource::Literal(ref literal) => Ok(literal.clone()),
             ValueSource::TakeRef(ident) => Ok(Value::Ref(self.var(ident)?.clone())),
-            ValueSource::Derefs(derefs) => todo!(),
+            ValueSource::Derefs(derefs) => Ok(self.derefs(derefs).borrow().clone()),
         }
     }
 
