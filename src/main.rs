@@ -746,9 +746,12 @@ impl<'code> VM<'code> {
                                 }
 
                                 "push" => {
-                                    let list = args.next().expect("expected an argument");
-                                    let mut list =
-                                        list.as_ref().expect("expected a reference").borrow_mut();
+                                    let list = args
+                                        .next()
+                                        .expect("expected an argument")
+                                        .into_ref()
+                                        .expect("expected a reference");
+                                    let mut list = list.borrow_mut();
                                     let list =
                                         list.as_list_mut().expect("expected a reference to list");
 
