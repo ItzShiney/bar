@@ -745,7 +745,17 @@ impl<'code> VM<'code> {
                                     }
                                 }
 
-                                "push" => todo!(),
+                                "push" => {
+                                    let list = args.next().expect("expected an argument");
+                                    let mut list =
+                                        list.as_ref().expect("expected a reference").borrow_mut();
+                                    let list =
+                                        list.as_list_mut().expect("expected a reference to list");
+
+                                    list.extend(args.map(value_ref));
+
+                                    Value::None
+                                }
 
                                 _ => panic!("function '{}' was not found", ident),
                             },
