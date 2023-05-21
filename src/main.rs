@@ -612,8 +612,6 @@ impl<'code> VM<'code> {
 
                     match out {
                         Out::Ident(ident) => {
-                            let value = value_ref(value);
-
                             match ident {
                                 VarIdent::Global(ident) => self.globals.insert(ident, value),
                                 VarIdent::Local(ident) => self.locals_mut().insert(ident, value),
@@ -621,7 +619,7 @@ impl<'code> VM<'code> {
                         }
 
                         Out::Derefs(derefs) => {
-                            *self.derefs(derefs).borrow_mut() = value;
+                            self.derefs_mut(derefs, |out| *out = value);
                         }
                     };
                 }
@@ -668,7 +666,7 @@ impl<'code> VM<'code> {
                                     {
                                         match either_or_both {
                                             EitherOrBoth::Both(ident, value) => {
-                                                locals.insert(ident, value_ref(value));
+                                                locals.insert(ident, value);
                                             }
 
                                             _ => panic!("argument counts do not match"),
@@ -698,7 +696,7 @@ impl<'code> VM<'code> {
                                 "sum" => {
                                     let mut res = 0.;
                                     for arg in args {
-                                        res += arg.as_number().expect("expected a number");
+                                        res += arg.borrow().as_number().expect("expected a number");
                                     }
 
                                     Value::Number(res)
@@ -708,11 +706,12 @@ impl<'code> VM<'code> {
                                     let mut res = *args
                                         .next()
                                         .expect("expected an argument")
+                                        .borrow()
                                         .as_number()
                                         .expect("expected a number");
 
                                     for arg in args {
-                                        res -= arg.as_number().expect("expected a number");
+                                        res -= arg.borrow().as_number().expect("expected a number");
                                     }
 
                                     Value::Number(res)
@@ -721,7 +720,7 @@ impl<'code> VM<'code> {
                                 "join" => {
                                     let mut res = String::default();
                                     for arg in args {
-                                        write!(&mut res, "{}", arg).unwrap();
+                                        write!(&mut res, "{}", arg.borrow()).unwrap();
                                     }
 
                                     Value::String(Cow::Owned(res))
@@ -729,7 +728,7 @@ impl<'code> VM<'code> {
 
                                 "prin" => {
                                     for arg in args {
-                                        print!("{}", arg);
+                                        print!("{}", arg.borrow());
                                     }
 
                                     Value::None
@@ -737,7 +736,7 @@ impl<'code> VM<'code> {
 
                                 "print" => {
                                     for arg in args {
-                                        print!("{}", arg);
+                                        print!("{}", arg.borrow());
                                     }
                                     println!();
 
@@ -759,12 +758,18 @@ impl<'code> VM<'code> {
                                 "le" => Value::Bool(args.tuple_windows().all(|(a, b)| a <= b)),
                                 "ge" => Value::Bool(args.tuple_windows().all(|(a, b)| a >= b)),
 
-                                "list" => Value::List(args.map(value_ref).collect()),
+                                "list" => Value::List(args.collect()),
 
                                 "at" => {
                                     let list_or_ref = args.next().expect("expected an argument");
+                                    let list_or_ref = list_or_ref.borrow();
+                                    let list_or_ref = &*list_or_ref;
 
-                                    let idx = args.next().expect("expected an argument").as_index();
+                                    let idx = args
+                                        .next()
+                                        .expect("expected an argument")
+                                        .borrow()
+                                        .as_index();
 
                                     match list_or_ref {
                                         Value::Ref(list_ref) => match &*list_ref.borrow() {
@@ -779,16 +784,14 @@ impl<'code> VM<'code> {
                                 }
 
                                 "push" => {
-                                    let list = args
-                                        .next()
-                                        .expect("expected an argument")
-                                        .into_ref()
-                                        .expect("expected a reference");
+                                    let list = args.next().expect("expected an argument");
+                                    let list = list.borrow();
+                                    let list = list.as_ref().expect("expected a reference");
                                     let mut list = list.borrow_mut();
                                     let list =
                                         list.as_list_mut().expect("expected a reference to list");
 
-                                    list.extend(args.map(value_ref));
+                                    list.extend(args);
 
                                     Value::None
                                 }
@@ -884,6 +887,17 @@ impl<'code> VM<'code> {
         .ok_or(UnknownVariable)
     }
 
+    pub fn var_mut(
+        &mut self,
+        ident: VarIdent<'code>,
+    ) -> Result<&mut ValueRef<'code>, UnknownVariable> {
+        match ident {
+            VarIdent::Global(ident) => self.globals.get_mut(ident),
+            VarIdent::Local(ident) => self.locals_mut().get_mut(ident),
+        }
+        .ok_or(UnknownVariable)
+    }
+
     pub fn var_entry(
         &mut self,
         ident: VarIdent<'code>,
@@ -897,12 +911,12 @@ impl<'code> VM<'code> {
     pub fn value<'value>(
         &'value self,
         value: &'value ValueSource<'code>,
-    ) -> Result<Value<'code>, UnknownVariable> {
+    ) -> Result<ValueRef<'code>, UnknownVariable> {
         Ok(match *value {
-            ValueSource::Ident(ident) => self.var(ident)?.borrow().clone(),
-            ValueSource::Literal(ref literal) => literal.clone(),
-            ValueSource::TakeRef(ident) => Value::Ref(self.var(ident)?.clone()),
-            ValueSource::Derefs(derefs) => self.derefs(derefs).borrow().clone(),
+            ValueSource::Ident(ident) => self.var(ident)?.clone(),
+            ValueSource::Literal(ref literal) => value_ref(literal.clone()),
+            ValueSource::TakeRef(ident) => value_ref(Value::Ref(self.var(ident)?.clone())),
+            ValueSource::Derefs(derefs) => self.derefs(derefs).clone(),
         })
     }
 
@@ -915,6 +929,28 @@ impl<'code> VM<'code> {
         }
 
         res
+    }
+
+    pub fn derefs_mut(
+        &mut self,
+        Derefs { ident, times }: Derefs<'code>,
+        f: impl FnOnce(&mut ValueRef<'code>),
+    ) {
+        fn rec<'code>(
+            value: &mut ValueRef<'code>,
+            times: usize,
+            f: impl FnOnce(&mut ValueRef<'code>),
+        ) {
+            if times == 0 {
+                f(value);
+            } else {
+                let mut borrow = value.borrow_mut();
+                rec(borrow.as_ref_mut().expect("expected a reference"), times - 1, f)
+            }
+        }
+
+        let res = self.var_mut(ident).expect("expected the variable to exist");
+        rec(res, times, f);
     }
 }
 
