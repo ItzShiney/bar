@@ -424,14 +424,26 @@ pub fn instructions(input: &str) -> IResult<&str, Vec<Instruction>> {
     terminated(many0(instruction), cut(spaces))(input)
 }
 
-#[derive(Clone, PartialEq, EnumAsInner)]
+#[derive(Debug, Clone, PartialEq, EnumAsInner)]
 pub enum Value<'code> {
     None,
     Bool(bool),
     Number(f64),
     String(Cow<'code, str>),
     Ref(ValueRef<'code>),
-    List(Vec<Value<'code>>),
+    List(Vec<ValueRef<'code>>),
+}
+
+impl Value<'_> {
+    pub fn as_index(&self) -> usize {
+        let res = self.as_number().copied().expect("expected a number");
+
+        if (res.floor() - res).abs() > 1e-2 {
+            panic!("expected an integer");
+        }
+
+        res as usize - 1
+    }
 }
 
 impl From<bool> for Value<'_> {
@@ -479,14 +491,22 @@ impl Display for Value<'_> {
             Self::Number(number) => write!(f, "{}", number),
             Self::String(ref string) => write!(f, "{}", string),
             Self::Ref(ref value) => write!(f, "?{}", value.borrow()),
-            Self::List(ref value) => write!(f, "{:?}", value),
-        }
-    }
-}
 
-impl Debug for Value<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        Display::fmt(&self, f)
+            Self::List(ref value) => {
+                write!(f, "list(")?;
+
+                let mut iter = value.iter();
+                if let Some(value) = iter.next() {
+                    write!(f, "{}", value.borrow())?;
+
+                    for value in iter {
+                        write!(f, ", {}", value.borrow())?;
+                    }
+                }
+
+                write!(f, ")")
+            }
+        }
     }
 }
 
@@ -555,8 +575,7 @@ impl<'code> VM<'code> {
 
             match *instruction {
                 Instruction::SetValue { ref value, out } => {
-                    let value =
-                        self.value(value).expect("expected the variable to exist").into_owned();
+                    let value = self.value(value).expect("expected the variable to exist");
 
                     match out {
                         Out::Ident(ident) => {
@@ -616,7 +635,7 @@ impl<'code> VM<'code> {
                                     {
                                         match either_or_both {
                                             EitherOrBoth::Both(ident, value) => {
-                                                locals.insert(ident, value_ref(value.into_owned()));
+                                                locals.insert(ident, value_ref(value));
                                             }
 
                                             _ => panic!("argument counts do not match"),
@@ -635,7 +654,8 @@ impl<'code> VM<'code> {
                                         panic!("expected local variable '{}' to exist, since it is being returned", out_ident);
                                     };
 
-                                    (*out_value).clone().into_inner()
+                                    let ref_ = out_value.borrow();
+                                    ref_.clone()
                                 } else {
                                     Value::None
                                 }
@@ -698,6 +718,7 @@ impl<'code> VM<'code> {
                                     a.partial_cmp(&b).map(Value::from).into()
                                 }
 
+                                // TODO?: a.partial_cmp(b).expect("cannot compare values of different types")
                                 "eq" => Value::Bool(args.tuple_windows().all(|(a, b)| a == b)),
                                 "ne" => Value::Bool(args.tuple_windows().all(|(a, b)| a != b)),
                                 "lt" => Value::Bool(args.tuple_windows().all(|(a, b)| a < b)),
@@ -705,7 +726,25 @@ impl<'code> VM<'code> {
                                 "le" => Value::Bool(args.tuple_windows().all(|(a, b)| a <= b)),
                                 "ge" => Value::Bool(args.tuple_windows().all(|(a, b)| a >= b)),
 
-                                "list" => Value::List(args.map(Cow::into_owned).collect()),
+                                "list" => Value::List(args.map(value_ref).collect()),
+
+                                "at" => {
+                                    let list_or_ref = args.next().expect("expected an argument");
+
+                                    let idx = args.next().expect("expected an argument").as_index();
+
+                                    match list_or_ref {
+                                        Value::Ref(list_ref) => match &*list_ref.borrow() {
+                                            Value::List(list) => Value::Ref(list[idx].clone()),
+                                            _ => panic!("expected a list or a reference to list"),
+                                        },
+
+                                        Value::List(list) => list[idx].borrow().clone(),
+
+                                        _ => panic!("expected a list or a reference to list"),
+                                    }
+                                }
+
                                 "push" => todo!(),
 
                                 _ => panic!("function '{}' was not found", ident),
@@ -716,6 +755,7 @@ impl<'code> VM<'code> {
                     if let Some(out) = out {
                         match out {
                             Out::Ident(ident) => self.var_entry(ident).insert(value_ref(res)),
+
                             Out::Derefs(derefs) => *self.derefs(derefs).borrow_mut() = res,
                         }
                     }
@@ -809,13 +849,13 @@ impl<'code> VM<'code> {
     pub fn value<'value>(
         &'value self,
         value: &'value ValueSource<'code>,
-    ) -> Result<Cow<'value, Value<'code>>, UnknownVariable> {
-        match *value {
-            ValueSource::Ident(ident) => Ok(Cow::Owned(self.var(ident)?.borrow().clone())),
-            ValueSource::Literal(ref literal) => Ok(Cow::Borrowed(literal)),
-            ValueSource::TakeRef(ident) => Ok(Cow::Owned(Value::Ref(self.var(ident)?.clone()))),
-            ValueSource::Derefs(derefs) => Ok(Cow::Owned(self.derefs(derefs).borrow().clone())),
-        }
+    ) -> Result<Value<'code>, UnknownVariable> {
+        Ok(match *value {
+            ValueSource::Ident(ident) => self.var(ident)?.borrow().clone(),
+            ValueSource::Literal(ref literal) => literal.clone(),
+            ValueSource::TakeRef(ident) => Value::Ref(self.var(ident)?.clone()),
+            ValueSource::Derefs(derefs) => self.derefs(derefs).borrow().clone(),
+        })
     }
 
     pub fn derefs(&self, Derefs { ident, times }: Derefs<'code>) -> ValueRef<'code> {
