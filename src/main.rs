@@ -424,12 +424,42 @@ pub fn instructions(input: &str) -> IResult<&str, Vec<Instruction>> {
     terminated(many0(instruction), cut(spaces))(input)
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Trace;
+
+impl Trace {
+    pub fn new() -> Self {
+        println!("[Trace::new]");
+        Trace
+    }
+}
+
+impl Display for Trace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "trace()")
+    }
+}
+
+impl Clone for Trace {
+    fn clone(&self) -> Self {
+        println!("[Trace::clone]");
+        Trace
+    }
+}
+
+impl Drop for Trace {
+    fn drop(&mut self) {
+        println!("[Trace::drop]");
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, EnumAsInner)]
 pub enum Value<'code> {
     None,
     Bool(bool),
     Number(f64),
     String(Cow<'code, str>),
+    Trace(Trace),
     Ref(ValueRef<'code>),
     List(Vec<ValueRef<'code>>),
 }
@@ -490,6 +520,7 @@ impl Display for Value<'_> {
             Self::Bool(bool) => write!(f, "{}", bool),
             Self::Number(number) => write!(f, "{}", number),
             Self::String(ref string) => write!(f, "{}", string),
+            Self::Trace(ref trace) => write!(f, "{}", trace),
             Self::Ref(ref value) => write!(f, "?{}", value.borrow()),
 
             Self::List(ref value) => {
@@ -518,6 +549,7 @@ impl PartialOrd for Value<'_> {
             (Self::Number(lhs), Self::Number(rhs)) => lhs.partial_cmp(rhs),
             (Self::String(lhs), Self::String(rhs)) => lhs.partial_cmp(rhs),
             (Self::Ref(lhs), Self::Ref(rhs)) => lhs.partial_cmp(rhs),
+            (Self::Trace(_), Self::Trace(_)) => Some(Ordering::Equal),
             (Self::List(lhs), Self::List(rhs)) => lhs.partial_cmp(rhs),
 
             (
@@ -526,7 +558,8 @@ impl PartialOrd for Value<'_> {
                 | Self::Number(_)
                 | Self::String(_)
                 | Self::Ref(_)
-                | Self::List(_),
+                | Self::List(_)
+                | Self::Trace(_),
                 _,
             ) => None,
         }
@@ -759,6 +792,8 @@ impl<'code> VM<'code> {
 
                                     Value::None
                                 }
+
+                                "trace" => Value::Trace(Trace::new()),
 
                                 _ => panic!("function '{}' was not found", ident),
                             },

@@ -1,4 +1,2 @@
-list(1 2 3) > a
-print(a)
-push(?a 4 5)
-print(a)
+trace() >- list(-) >- list(-) > l
+print(l) // list(list(trace()))
