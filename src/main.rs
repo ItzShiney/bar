@@ -20,7 +20,6 @@ use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Write;
-use std::marker::PhantomPinned;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
@@ -608,14 +607,13 @@ pub struct UnknownVariable;
 pub struct Instructions<'code> {
     global: Box<[Instruction<'code>]>,
     locals: Vec<NonNull<[Instruction<'code>]>>,
-    _pin: PhantomPinned,
 }
 
 impl<'code> Instructions<'code> {
     pub fn new(global: Vec<Instruction<'code>>) -> Self {
         let global = global.into_boxed_slice();
 
-        Self { global, locals: Default::default(), _pin: PhantomPinned }
+        Self { global, locals: Default::default() }
     }
 
     fn local(&self) -> Option<&[Instruction<'code>]> {
