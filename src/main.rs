@@ -20,6 +20,9 @@ use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Write;
+use std::marker::PhantomPinned;
+use std::pin::Pin;
+use std::ptr::NonNull;
 use std::rc::Rc;
 
 pub trait Insert {
@@ -78,20 +81,36 @@ pub struct Derefs<'code> {
 
 #[derive(Clone)]
 pub enum ValueSource<'code> {
-    Ident(VarIdent<'code>),
+    Variable(VarIdent<'code>),
     Literal(Value<'code>),
     TakeRef(VarIdent<'code>),
     Derefs(Derefs<'code>),
+    FunctionCall { ident: VarIdent<'code>, args: Vec<Self> },
 }
 
 impl Display for ValueSource<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Self::Ident(ident) => write!(f, "{}", ident),
+            Self::Variable(ident) => write!(f, "{}", ident),
             Self::Literal(ref literal) => write!(f, "{}", literal),
             Self::TakeRef(ident) => write!(f, "?{}", ident),
             Self::Derefs(Derefs { ident, times }) => {
                 write!(f, "{}{}", "!".repeat(times), ident)
+            }
+
+            Self::FunctionCall { ident, ref args } => {
+                write!(f, "{}(", ident)?;
+
+                let mut iter = args.iter();
+                if let Some(value) = iter.next() {
+                    write!(f, "{}", value)?;
+
+                    for value in iter {
+                        write!(f, ", {}", value)?;
+                    }
+                }
+
+                write!(f, ")")
             }
         }
     }
@@ -161,22 +180,31 @@ pub enum JumpType {
 }
 
 #[derive(Clone)]
+pub struct FunctionDefinition<'code> {
+    pub signature: FunctionSignature<'code>,
+    pub body: Vec<Instruction<'code>>,
+}
+
+#[derive(Clone)]
 pub enum Instruction<'code> {
-    SetValue { value: ValueSource<'code>, out: Out<'code> },
-    FunctionCall { ident: VarIdent<'code>, args: Vec<ValueSource<'code>>, out: Option<Out<'code>> },
+    Value { value: ValueSource<'code>, out: Option<Out<'code>> },
     LabelDefinition { ident: Ident<'code> },
     Go { type_: JumpType, label: Ident<'code> },
     Return,
-    FunctionDefinition { signature: FunctionSignature<'code>, body: Vec<Instruction<'code>> },
+    FunctionDefinition(FunctionDefinition<'code>),
 }
 
 impl Display for Instruction<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Self::SetValue { value, out } => write!(f, "{} > {}", value, out),
+            Self::Value { value, out } => {
+                write!(f, "{}", value)?;
 
-            Self::FunctionCall { ident, args, out } => {
-                write!(f, "{}({}) > {:?}", ident, args.iter().join(" "), out)
+                if let Some(out) = out {
+                    write!(f, " > {}", out)?;
+                }
+
+                Ok(())
             }
 
             Self::LabelDefinition { ident } => write!(f, ":{}", ident),
@@ -194,7 +222,7 @@ impl Display for Instruction<'_> {
 
             Self::Return => write!(f, "ret"),
 
-            Self::FunctionDefinition { signature, body } => {
+            Self::FunctionDefinition(FunctionDefinition { signature, body }) => {
                 write!(f, "{{ {}\n{:#?}\n}}", signature, body)
             }
         }
@@ -307,7 +335,16 @@ pub fn value(input: &str) -> IResult<&str, ValueSource> {
     }
 
     fn var(input: &str) -> IResult<&str, ValueSource> {
-        map(var_ident, ValueSource::Ident)(input)
+        fn args(input: &str) -> IResult<&str, Vec<ValueSource>> {
+            delimited(wtag("("), cut(values), cut(wtag(")")))(input)
+        }
+
+        let (input, ident) = var_ident(input)?;
+
+        Ok(match args(input) {
+            Err(_) => (input, ValueSource::Variable(ident)),
+            Ok((input, args)) => (input, ValueSource::FunctionCall { ident, args }),
+        })
     }
 
     fn take_ref(input: &str) -> IResult<&str, ValueSource> {
@@ -351,18 +388,10 @@ pub fn instruction(input: &str) -> IResult<&str, Instruction> {
         preceded(wtag(">"), cut(alt((out_ident, out_derefs))))(input)
     }
 
-    fn set_value(input: &str) -> IResult<&str, Instruction> {
-        let (input, (value, out)) = pair(value, instruction_out)(input)?;
+    fn write_value(input: &str) -> IResult<&str, Instruction> {
+        let (input, (value, out)) = pair(value, opt(instruction_out))(input)?;
 
-        Ok((input, Instruction::SetValue { value, out }))
-    }
-
-    fn function_call(input: &str) -> IResult<&str, Instruction> {
-        let (input, (ident, args, out)) =
-            (var_ident, delimited(wtag("("), cut(values), cut(wtag(")"))), opt(instruction_out))
-                .parse(input)?;
-
-        Ok((input, Instruction::FunctionCall { ident, args, out }))
+        Ok((input, Instruction::Value { value, out }))
     }
 
     fn label_definition(input: &str) -> IResult<&str, Instruction> {
@@ -411,12 +440,11 @@ pub fn instruction(input: &str) -> IResult<&str, Instruction> {
             cut(wtag("}")),
         )(input)?;
 
-        Ok((input, Instruction::FunctionDefinition { signature, body }))
+        Ok((input, Instruction::FunctionDefinition(FunctionDefinition { signature, body })))
     }
 
     let (input, instruction) =
-        (set_value, function_call, label_definition, go, goif, goifn, ret, function_definition)
-            .choice(input)?;
+        (write_value, label_definition, go, goif, goifn, ret, function_definition).choice(input)?;
     Ok((input, instruction))
 }
 
@@ -523,10 +551,10 @@ impl Display for Value<'_> {
             Self::Trace(ref trace) => write!(f, "{}", trace),
             Self::Ref(ref value) => write!(f, "?{}", value.borrow()),
 
-            Self::List(ref value) => {
+            Self::List(ref list) => {
                 write!(f, "list(")?;
 
-                let mut iter = value.iter();
+                let mut iter = list.iter();
                 if let Some(value) = iter.next() {
                     write!(f, "{}", value.borrow())?;
 
@@ -578,236 +606,60 @@ pub struct CompileError;
 #[derive(Debug, Clone, Copy)]
 pub struct UnknownVariable;
 
-#[derive(Default)]
-pub struct VM<'code> {
-    pub globals: HashMap<Ident<'code>, ValueRef<'code>>,
-    locals: Vec<HashMap<Ident<'code>, ValueRef<'code>>>,
+pub struct Instructions<'code> {
+    global: Vec<Instruction<'code>>,
+    locals: Vec<NonNull<[Instruction<'code>]>>,
+    _pin: PhantomPinned,
 }
 
-impl<'code> VM<'code> {
-    pub fn run(&mut self, code: &'code str) -> Result<(), CompileError> {
-        let (_, instructions) = instructions(code).unwrap();
-
-        Ok(self.run_instructions(&instructions))
+impl<'code> Instructions<'code> {
+    pub fn new(global: Vec<Instruction<'code>>) -> Pin<Box<RefCell<Self>>> {
+        Box::pin(Self { global, locals: Default::default(), _pin: PhantomPinned }.into())
     }
 
-    pub fn run_instructions<'s>(&'s mut self, instructions: &'s [Instruction<'code>]) {
-        self.run_instructions_local(instructions, instructions)
+    fn local(&self) -> Option<&[Instruction<'code>]> {
+        unsafe { Some(self.locals.last()?.as_ref()) }
     }
 
-    fn run_instructions_local<'s>(
-        &'s mut self,
-        instructions: &'s [Instruction<'code>],
-        global_instructions: &'s [Instruction<'code>],
-    ) {
+    fn current(&self) -> &[Instruction<'code>] {
+        self.local().unwrap_or(&self.global)
+    }
+
+    fn global_rev(&self) -> impl Iterator<Item = &Instruction<'code>> {
+        self.global.iter().rev()
+    }
+
+    fn local_rev(&self) -> impl Iterator<Item = &Instruction<'code>> {
+        self.local().map(|local| local.iter().rev()).into_iter().flatten()
+    }
+
+    fn all_rev(&self) -> impl Iterator<Item = &Instruction<'code>> {
+        self.local_rev().chain(self.global_rev())
+    }
+
+    pub fn run(&mut self, vm: &mut VM<'code>) {
         let mut instruction_idx = 0;
 
-        'run: while instruction_idx < instructions.len() {
-            let instruction = &instructions[instruction_idx];
+        'run: while instruction_idx < self.current().len() {
+            let instruction = &self.current()[instruction_idx];
             instruction_idx += 1;
 
             match *instruction {
-                Instruction::SetValue { ref value, out } => {
-                    let value = self.value(value).expect("expected the variable to exist");
-
-                    match out {
-                        Out::Ident(ident) => {
-                            match ident {
-                                VarIdent::Global(ident) => self.globals.insert(ident, value),
-                                VarIdent::Local(ident) => self.locals_mut().insert(ident, value),
-                            };
-                        }
-
-                        Out::Derefs(derefs) => {
-                            self.derefs_mut(derefs, |out| *out = value);
-                        }
-                    };
-                }
-
-                Instruction::FunctionCall { ident, ref args, out } => {
-                    fn find_function_definition<'code, 's>(
-                        ident: Ident<'code>,
-                        mut instructions: impl Iterator<Item = &'s Instruction<'code>>,
-                    ) -> Option<&'s Instruction<'code>> {
-                        instructions.find(|&instruction| {
-                            matches!(*instruction,
-                                Instruction::FunctionDefinition {
-                                    signature: FunctionSignature { ident: definition_ident, .. },
-                                    ..
-                                } if definition_ident == ident
-                            )
-                        })
-                    }
-
-                    let mut args = args.iter().map(|value| self.value(value).unwrap());
-
-                    let res = {
-                        let maybe_function_definition = match ident {
-                            VarIdent::Global(ident) => {
-                                find_function_definition(ident, global_instructions.iter().rev())
-                            }
-
-                            VarIdent::Local(ident) => find_function_definition(
-                                ident,
-                                instructions.iter().rev().chain(global_instructions.iter().rev()),
-                            ),
-                        };
-
-                        match maybe_function_definition {
-                            Some(function_definition) => {
-                                let Instruction::FunctionDefinition { signature, body } = function_definition else { unreachable!() };
-
-                                self.locals.push({
-                                    let mut locals =
-                                        HashMap::<Ident<'code>, ValueRef<'code>>::default();
-
-                                    for either_or_both in
-                                        signature.args.iter().copied().zip_longest(args)
-                                    {
-                                        match either_or_both {
-                                            EitherOrBoth::Both(ident, value) => {
-                                                locals.insert(ident, value);
-                                            }
-
-                                            _ => panic!("argument counts do not match"),
-                                        }
-                                    }
-
-                                    locals
-                                });
-
-                                self.run_instructions_local(body, global_instructions);
-
-                                let mut locals = self.locals.pop().unwrap();
-
-                                if let Some(out_ident) = signature.out {
-                                    let Some(out_value) = locals.remove(out_ident) else {
-                                        panic!("expected local variable '{}' to exist, since it is being returned", out_ident);
-                                    };
-
-                                    let ref_ = out_value.borrow();
-                                    ref_.clone()
-                                } else {
-                                    Value::None
-                                }
-                            }
-
-                            None => match ident.into() {
-                                "sum" => {
-                                    let mut res = 0.;
-                                    for arg in args {
-                                        res += arg.borrow().as_number().expect("expected a number");
-                                    }
-
-                                    Value::Number(res)
-                                }
-
-                                "sub" => {
-                                    let mut res = *args
-                                        .next()
-                                        .expect("expected an argument")
-                                        .borrow()
-                                        .as_number()
-                                        .expect("expected a number");
-
-                                    for arg in args {
-                                        res -= arg.borrow().as_number().expect("expected a number");
-                                    }
-
-                                    Value::Number(res)
-                                }
-
-                                "join" => {
-                                    let mut res = String::default();
-                                    for arg in args {
-                                        write!(&mut res, "{}", arg.borrow()).unwrap();
-                                    }
-
-                                    Value::String(Cow::Owned(res))
-                                }
-
-                                "prin" => {
-                                    for arg in args {
-                                        print!("{}", arg.borrow());
-                                    }
-
-                                    Value::None
-                                }
-
-                                "print" => {
-                                    for arg in args {
-                                        print!("{}", arg.borrow());
-                                    }
-                                    println!();
-
-                                    Value::None
-                                }
-
-                                "cmp" => {
-                                    let (a, b) =
-                                        args.collect_tuple().expect("invalid arguments count");
-
-                                    a.partial_cmp(&b).map(Value::from).into()
-                                }
-
-                                // TODO?: a.partial_cmp(b).expect("cannot compare values of different types")
-                                "eq" => Value::Bool(args.tuple_windows().all(|(a, b)| a == b)),
-                                "ne" => Value::Bool(args.tuple_windows().all(|(a, b)| a != b)),
-                                "lt" => Value::Bool(args.tuple_windows().all(|(a, b)| a < b)),
-                                "gt" => Value::Bool(args.tuple_windows().all(|(a, b)| a > b)),
-                                "le" => Value::Bool(args.tuple_windows().all(|(a, b)| a <= b)),
-                                "ge" => Value::Bool(args.tuple_windows().all(|(a, b)| a >= b)),
-
-                                "list" => Value::List(args.collect()),
-
-                                "at" => {
-                                    let list_or_ref = args.next().expect("expected an argument");
-                                    let list_or_ref = list_or_ref.borrow();
-                                    let list_or_ref = &*list_or_ref;
-
-                                    let idx = args
-                                        .next()
-                                        .expect("expected an argument")
-                                        .borrow()
-                                        .as_index();
-
-                                    match list_or_ref {
-                                        Value::Ref(list_ref) => match &*list_ref.borrow() {
-                                            Value::List(list) => Value::Ref(list[idx].clone()),
-                                            _ => panic!("expected a list or a reference to list"),
-                                        },
-
-                                        Value::List(list) => list[idx].borrow().clone(),
-
-                                        _ => panic!("expected a list or a reference to list"),
-                                    }
-                                }
-
-                                "push" => {
-                                    let list = args.next().expect("expected an argument");
-                                    let list = list.borrow();
-                                    let list = list.as_ref().expect("expected a reference");
-                                    let mut list = list.borrow_mut();
-                                    let list =
-                                        list.as_list_mut().expect("expected a reference to list");
-
-                                    list.extend(args);
-
-                                    Value::None
-                                }
-
-                                "trace" => Value::Trace(Trace::new()),
-
-                                _ => panic!("function '{}' was not found", ident),
-                            },
-                        }
-                    };
+                Instruction::Value { ref value, out } => {
+                    let value = vm.value(self, value.clone());
 
                     if let Some(out) = out {
                         match out {
-                            Out::Ident(ident) => self.var_entry(ident).insert(value_ref(res)),
+                            Out::Ident(ident) => {
+                                match ident {
+                                    VarIdent::Global(ident) => vm.globals.insert(ident, value),
+                                    VarIdent::Local(ident) => vm.locals_mut().insert(ident, value),
+                                };
+                            }
 
-                            Out::Derefs(derefs) => *self.derefs(derefs).borrow_mut() = res,
+                            Out::Derefs(derefs) => {
+                                vm.derefs_mut(derefs, |out| *out = value);
+                            }
                         }
                     }
                 }
@@ -819,7 +671,7 @@ impl<'code> VM<'code> {
                         JumpType::Forced => {}
 
                         JumpType::If => {
-                            if !*self
+                            if !*vm
                                 .globals
                                 .get("if")
                                 .expect("expected global variable 'if' to exist, since it is used by 'goif' statement")
@@ -832,7 +684,7 @@ impl<'code> VM<'code> {
                         }
 
                         JumpType::IfNot => {
-                            if *self
+                            if *vm
                                 .globals
                                 .get("if")
                                 .expect("expected global variable 'if' to exist, since it is used by 'goifn' statement")
@@ -846,8 +698,8 @@ impl<'code> VM<'code> {
                     }
 
                     instruction_idx = 0;
-                    while instruction_idx < instructions.len() {
-                        let instruction = &instructions[instruction_idx];
+                    while instruction_idx < self.current().len() {
+                        let instruction = &self.current()[instruction_idx];
                         instruction_idx += 1;
 
                         match *instruction {
@@ -869,6 +721,225 @@ impl<'code> VM<'code> {
                 Instruction::FunctionDefinition { .. } => {}
             }
         }
+    }
+
+    fn run_function(
+        &mut self,
+        vm: &mut VM<'code>,
+        locals: HashMap<&'code str, ValueRef<'code>>,
+        ident: VarIdent<'code>,
+    ) -> HashMap<&'code str, ValueRef<'code>> {
+        vm.locals.push(locals);
+
+        let instructions: &[_] = &self.find_function_definition(ident).unwrap().body;
+
+        self.locals.push(NonNull::from(instructions));
+        self.run(vm);
+        self.locals.pop();
+
+        vm.locals.pop().unwrap()
+    }
+
+    fn find_function_definition(
+        &self,
+        ident: VarIdent<'code>,
+    ) -> Option<&FunctionDefinition<'code>> {
+        fn helper<'code, 's>(
+            ident: Ident<'code>,
+            instructions: impl Iterator<Item = &'s Instruction<'code>>,
+        ) -> Option<&'s FunctionDefinition<'code>> {
+            instructions
+                .filter_map(|instruction| match instruction {
+                    Instruction::FunctionDefinition(
+                        res @ FunctionDefinition {
+                            signature: FunctionSignature { ident: definition_ident, .. },
+                            ..
+                        },
+                    ) if *definition_ident == ident => Some(res),
+                    _ => None,
+                })
+                .next()
+        }
+
+        match ident {
+            VarIdent::Global(ident) => helper(ident, self.global_rev()),
+            VarIdent::Local(ident) => helper(ident, self.all_rev()),
+        }
+    }
+
+    pub fn call_function(
+        &mut self,
+        vm: &mut VM<'code>,
+        ident: VarIdent<'code>,
+        args: Vec<ValueSource<'code>>,
+    ) -> Value<'code> {
+        match self.find_function_definition(ident) {
+            None => self.call_native_function(vm, ident.into(), args),
+
+            Some(function_definition) => {
+                let signature_args = function_definition.signature.args.clone();
+                let signature_out = function_definition.signature.out;
+
+                let locals = {
+                    let mut locals = HashMap::default();
+
+                    for either_or_both in signature_args.into_iter().zip_longest(args) {
+                        match either_or_both {
+                            EitherOrBoth::Both(ident, value) => {
+                                let value = vm.value(self, value);
+                                locals.insert(ident, value);
+                            }
+
+                            _ => panic!("argument counts do not match"),
+                        }
+                    }
+
+                    locals
+                };
+
+                let mut locals = self.run_function(vm, locals, ident);
+
+                if let Some(out_ident) = signature_out {
+                    let Some(out_value) = locals.remove(out_ident) else {
+                        panic!("expected local variable '{}' to exist, since it is being returned", out_ident);
+                    };
+
+                    let ref_ = out_value.borrow();
+                    ref_.clone()
+                } else {
+                    Value::None
+                }
+            }
+        }
+    }
+
+    pub fn call_native_function(
+        &mut self,
+        vm: &mut VM<'code>,
+        ident: Ident<'code>,
+        args: Vec<ValueSource<'code>>,
+    ) -> Value<'code> {
+        let mut args = args.into_iter().map(|value| vm.value(self, value));
+
+        match ident.into() {
+            "sum" => {
+                let mut res = 0.;
+                for arg in args {
+                    res += arg.borrow().as_number().expect("expected a number");
+                }
+
+                Value::Number(res)
+            }
+
+            "sub" => {
+                let mut res = *args
+                    .next()
+                    .expect("expected an argument")
+                    .borrow()
+                    .as_number()
+                    .expect("expected a number");
+
+                for arg in args {
+                    res -= arg.borrow().as_number().expect("expected a number");
+                }
+
+                Value::Number(res)
+            }
+
+            "join" => {
+                let mut res = String::default();
+                for arg in args {
+                    write!(&mut res, "{}", arg.borrow()).unwrap();
+                }
+
+                Value::String(Cow::Owned(res))
+            }
+
+            "prin" => {
+                for arg in args {
+                    print!("{}", arg.borrow());
+                }
+
+                Value::None
+            }
+
+            "print" => {
+                for arg in args {
+                    print!("{}", arg.borrow());
+                }
+                println!();
+
+                Value::None
+            }
+
+            "cmp" => {
+                let (a, b) = args.collect_tuple().expect("invalid arguments count");
+
+                a.partial_cmp(&b).map(Value::from).into()
+            }
+
+            // TODO?: a.partial_cmp(b).expect("cannot compare values of different types")
+            "eq" => Value::Bool(args.tuple_windows().all(|(a, b)| a == b)),
+            "ne" => Value::Bool(args.tuple_windows().all(|(a, b)| a != b)),
+            "lt" => Value::Bool(args.tuple_windows().all(|(a, b)| a < b)),
+            "gt" => Value::Bool(args.tuple_windows().all(|(a, b)| a > b)),
+            "le" => Value::Bool(args.tuple_windows().all(|(a, b)| a <= b)),
+            "ge" => Value::Bool(args.tuple_windows().all(|(a, b)| a >= b)),
+
+            "list" => Value::List(args.collect()),
+
+            "at" => {
+                let list_or_ref = args.next().expect("expected an argument");
+                let list_or_ref = list_or_ref.borrow();
+                let list_or_ref = &*list_or_ref;
+
+                let idx = args.next().expect("expected an argument").borrow().as_index();
+
+                match list_or_ref {
+                    Value::Ref(list_ref) => match &*list_ref.borrow() {
+                        Value::List(list) => Value::Ref(list[idx].clone()),
+                        _ => panic!("expected a list or a reference to list"),
+                    },
+
+                    Value::List(list) => list[idx].borrow().clone(),
+
+                    _ => panic!("expected a list or a reference to list"),
+                }
+            }
+
+            "push" => {
+                let list = args.next().expect("expected an argument");
+                let list = list.borrow();
+                let list = list.as_ref().expect("expected a reference");
+                let mut list = list.borrow_mut();
+                let list = list.as_list_mut().expect("expected a reference to list");
+
+                list.extend(args);
+
+                Value::None
+            }
+
+            "trace" => Value::Trace(Trace::new()),
+
+            _ => panic!("function '{}' was not found", ident),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct VM<'code> {
+    pub globals: HashMap<Ident<'code>, ValueRef<'code>>,
+    locals: Vec<HashMap<Ident<'code>, ValueRef<'code>>>,
+}
+
+impl<'code> VM<'code> {
+    pub fn run(&mut self, code: &'code str) -> Result<(), CompileError> {
+        let (_, instructions) = instructions(code).unwrap();
+
+        let instructions = Instructions::new(instructions);
+        instructions.borrow_mut().run(self);
+
+        Ok(())
     }
 
     pub fn locals(&self) -> &HashMap<Ident<'code>, ValueRef<'code>> {
@@ -908,16 +979,28 @@ impl<'code> VM<'code> {
         }
     }
 
-    pub fn value<'value>(
-        &'value self,
-        value: &'value ValueSource<'code>,
-    ) -> Result<ValueRef<'code>, UnknownVariable> {
-        Ok(match *value {
-            ValueSource::Ident(ident) => self.var(ident)?.clone(),
+    pub fn value(
+        &mut self,
+        instructions: &mut Instructions<'code>,
+        value: ValueSource<'code>,
+    ) -> ValueRef<'code> {
+        match value {
+            ValueSource::Variable(ident) => {
+                self.var(ident).expect("expected the variable to exist").clone()
+            }
+
             ValueSource::Literal(ref literal) => value_ref(literal.clone()),
-            ValueSource::TakeRef(ident) => value_ref(Value::Ref(self.var(ident)?.clone())),
+
+            ValueSource::TakeRef(ident) => value_ref(Value::Ref(
+                self.var(ident).expect("expected the variable to exist").clone(),
+            )),
+
             ValueSource::Derefs(derefs) => self.derefs(derefs).clone(),
-        })
+
+            ValueSource::FunctionCall { ident, args } => {
+                value_ref(instructions.call_function(self, ident, args))
+            }
+        }
     }
 
     pub fn derefs(&self, Derefs { ident, times }: Derefs<'code>) -> ValueRef<'code> {

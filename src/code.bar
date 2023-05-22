@@ -1,2 +1,2 @@
-trace() >- list(-) >- list(-) > l
-print(l) // list(list(trace()))
+list(list(1)) > l
+print(l)
