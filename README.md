@@ -35,10 +35,11 @@ If the output variable (`a`) does not exist, it gets created
 
 * Arguments are separated by spaces
 * An argument can be either a variable or a literal
-* No nesting is allowed
+* Nesting is allowed
 
 ```rust
 sum(a 1) > c
+print(sum(prod(2 3) prod(4 5)))
 ```
 
 ### Function definition
