@@ -455,9 +455,9 @@ pub fn instructions(input: &str) -> IResult<&str, Vec<Instruction>> {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Trace;
 
-impl Trace {
-    pub fn new() -> Self {
-        println!("[Trace::new]");
+impl Default for Trace {
+    fn default() -> Self {
+        println!("[Trace::default]");
         Trace
     }
 }
@@ -821,7 +821,7 @@ impl<'code> Instructions<'code> {
     ) -> Value<'code> {
         let mut args = args.into_iter().map(|value| vm.value(self, value));
 
-        match ident.into() {
+        match ident {
             "sum" => {
                 let mut res = 0.;
                 for arg in args {
@@ -919,7 +919,7 @@ impl<'code> Instructions<'code> {
                 Value::None
             }
 
-            "trace" => Value::Trace(Trace::new()),
+            "trace" => Value::Trace(Trace::default()),
 
             _ => panic!("function '{}' was not found", ident),
         }
@@ -995,7 +995,7 @@ impl<'code> VM<'code> {
                 self.var(ident).expect("expected the variable to exist").clone(),
             )),
 
-            ValueSource::Derefs(derefs) => self.derefs(derefs).clone(),
+            ValueSource::Derefs(derefs) => self.derefs(derefs),
 
             ValueSource::FunctionCall { ident, args } => {
                 value_ref(instructions.call_function(self, ident, args))
