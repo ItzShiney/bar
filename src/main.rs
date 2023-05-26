@@ -328,6 +328,9 @@ pub fn value(input: &str) -> IResult<&str, ValueSource> {
             (input, "none") => Ok((input, ValueSource::Literal(Value::None))),
             (input, "true") => Ok((input, ValueSource::Literal(Value::Bool(true)))),
             (input, "false") => Ok((input, ValueSource::Literal(Value::Bool(false)))),
+            (input, "nan") => Ok((input, ValueSource::Literal(Value::Number(f64::NAN)))),
+            (input, "inf") => Ok((input, ValueSource::Literal(Value::Number(f64::INFINITY)))),
+            (input, "-inf") => Ok((input, ValueSource::Literal(Value::Number(f64::NEG_INFINITY)))),
             _ => fail(input),
         }
     }
@@ -366,7 +369,7 @@ pub fn value(input: &str) -> IResult<&str, ValueSource> {
         Ok((input, ValueSource::Literal(Value::String(Cow::Borrowed(res)))))
     }
 
-    alt((keyword_value, var, take_ref, derefs_ident, number, string))(input)
+    alt((number, keyword_value, var, take_ref, derefs_ident, string))(input)
 }
 
 pub fn values(input: &str) -> IResult<&str, Vec<ValueSource>> {
@@ -544,7 +547,15 @@ impl Display for Value<'_> {
         match *self {
             Self::None => write!(f, "none"),
             Self::Bool(bool) => write!(f, "{}", bool),
-            Self::Number(number) => write!(f, "{}", number),
+
+            Self::Number(number) => {
+                if number.is_nan() {
+                    write!(f, "{}", "nan")
+                } else {
+                    write!(f, "{}", number)
+                }
+            }
+
             Self::String(ref string) => write!(f, "{}", string),
             Self::Trace(ref trace) => write!(f, "{}", trace),
             Self::Ref(ref value) => write!(f, "?{}", value.borrow()),
