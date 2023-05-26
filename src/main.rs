@@ -505,6 +505,12 @@ impl Value<'_> {
     }
 }
 
+impl From<()> for Value<'_> {
+    fn from(_: ()) -> Self {
+        Self::None
+    }
+}
+
 impl From<bool> for Value<'_> {
     fn from(value: bool) -> Self {
         Self::Bool(value)
@@ -882,7 +888,7 @@ impl<'code> Instructions<'code> {
                     res += as_number(arg);
                 }
 
-                Value::Number(res)
+                res.into()
             }
 
             "sub" => {
@@ -892,7 +898,7 @@ impl<'code> Instructions<'code> {
                     res -= arg.borrow().as_number().expect("expected a number");
                 }
 
-                Value::Number(res)
+                res.into()
             }
 
             "join" => {
@@ -960,9 +966,7 @@ impl<'code> Instructions<'code> {
                 let_borrow!(mut list);
                 let_as_list!(mut list);
 
-                list.extend(args);
-
-                Value::None
+                list.extend(args).into()
             }
 
             "pop" => {
