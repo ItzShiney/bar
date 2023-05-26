@@ -494,14 +494,14 @@ pub enum Value<'code> {
 }
 
 impl Value<'_> {
-    pub fn as_index(&self) -> usize {
-        let res = self.as_number().copied().expect("expected a number");
+    pub fn as_index(&self) -> Option<usize> {
+        let res = self.as_number().copied()?;
 
         if (res.floor() - res).abs() > 1e-2 {
-            panic!("expected an integer");
+            return None;
         }
 
-        res as usize - 1
+        Some(res as usize - 1)
     }
 }
 
@@ -533,10 +533,16 @@ impl<'code> From<Cow<'code, str>> for Value<'code> {
     }
 }
 
-impl<'code> From<Option<Value<'code>>> for Value<'code> {
-    fn from(value: Option<Value<'code>>) -> Self {
+impl<'code> From<ValueRef<'code>> for Value<'code> {
+    fn from(value: ValueRef<'code>) -> Self {
+        Self::Ref(value)
+    }
+}
+
+impl<'code, T: Into<Value<'code>>> From<Option<T>> for Value<'code> {
+    fn from(value: Option<T>) -> Self {
         match value {
-            Some(value) => value,
+            Some(value) => value.into(),
             None => Self::None,
         }
     }
@@ -831,23 +837,56 @@ impl<'code> Instructions<'code> {
     ) -> Value<'code> {
         let mut args = args.into_iter().map(|value| vm.value(self, value));
 
+        fn next_arg<'code>(args: &mut impl Iterator<Item = ValueRef<'code>>) -> ValueRef<'code> {
+            args.next().expect("expected an argument")
+        }
+
+        fn as_number<'code>(arg: ValueRef<'code>) -> f64 {
+            arg.borrow().as_number().copied().expect("expected a number")
+        }
+
+        fn as_index<'code>(arg: ValueRef<'code>) -> usize {
+            arg.borrow().as_index().expect("expected an index")
+        }
+
+        fn as_ref<'code>(arg: ValueRef<'code>) -> ValueRef<'code> {
+            arg.borrow().as_ref().cloned().expect("expected a reference")
+        }
+
+        macro_rules! let_borrow {
+            ($ref_value:ident) => {
+                let $ref_value = $ref_value.borrow();
+                let $ref_value = &*$ref_value;
+            };
+
+            (mut $ref_value:ident) => {
+                let mut $ref_value = $ref_value.borrow_mut();
+                let $ref_value = &mut *$ref_value;
+            };
+        }
+
+        macro_rules! let_as_list {
+            ($ref_value:ident) => {
+                let $ref_value = $ref_value.as_list().expect("expected a list");
+            };
+
+            (mut $ref_value:ident) => {
+                let $ref_value = $ref_value.as_list_mut().expect("expected a list");
+            };
+        }
+
         match ident {
             "sum" => {
                 let mut res = 0.;
                 for arg in args {
-                    res += arg.borrow().as_number().expect("expected a number");
+                    res += as_number(arg);
                 }
 
                 Value::Number(res)
             }
 
             "sub" => {
-                let mut res = *args
-                    .next()
-                    .expect("expected an argument")
-                    .borrow()
-                    .as_number()
-                    .expect("expected a number");
+                let mut res = as_number(next_arg(&mut args));
 
                 for arg in args {
                     res -= arg.borrow().as_number().expect("expected a number");
@@ -883,7 +922,7 @@ impl<'code> Instructions<'code> {
             }
 
             "cmp" => {
-                let (a, b) = args.collect_tuple().expect("invalid arguments count");
+                let (a, b) = args.collect_tuple().expect("expected exactly 2 arguments");
 
                 a.partial_cmp(&b).map(Value::from).into()
             }
@@ -899,11 +938,10 @@ impl<'code> Instructions<'code> {
             "list" => Value::List(args.collect()),
 
             "at" => {
-                let list_or_ref = args.next().expect("expected an argument");
-                let list_or_ref = list_or_ref.borrow();
-                let list_or_ref = &*list_or_ref;
+                let list_or_ref = next_arg(&mut args);
+                let_borrow!(list_or_ref);
 
-                let idx = args.next().expect("expected an argument").borrow().as_index();
+                let idx = as_index(next_arg(&mut args));
 
                 match list_or_ref {
                     Value::Ref(list_ref) => match &*list_ref.borrow() {
@@ -918,15 +956,21 @@ impl<'code> Instructions<'code> {
             }
 
             "push" => {
-                let list = args.next().expect("expected an argument");
-                let list = list.borrow();
-                let list = list.as_ref().expect("expected a reference");
-                let mut list = list.borrow_mut();
-                let list = list.as_list_mut().expect("expected a reference to list");
+                let list = as_ref(next_arg(&mut args));
+                let_borrow!(mut list);
+                let_as_list!(mut list);
 
                 list.extend(args);
 
                 Value::None
+            }
+
+            "pop" => {
+                let list = as_ref(next_arg(&mut args));
+                let_borrow!(mut list);
+                let_as_list!(mut list);
+
+                list.pop().into()
             }
 
             "trace" => Value::Trace(Trace::default()),

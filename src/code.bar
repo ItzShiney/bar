@@ -1,1 +1,5 @@
-print(nan)
+list(1 2 trace()) > l
+print(l)
+pop(?l) > x
+print(l)
+print(!x)
