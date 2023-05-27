@@ -977,6 +977,16 @@ impl<'code> Instructions<'code> {
                 list.pop().into()
             }
 
+            "pop-at" => {
+                let list = as_ref(next_arg(&mut args));
+                let_borrow!(mut list);
+                let_as_list!(mut list);
+
+                let idx = as_index(next_arg(&mut args));
+
+                list.remove(idx).into()
+            }
+
             "trace" => Value::Trace(Trace::default()),
 
             _ => panic!("function '{}' was not found", ident),
