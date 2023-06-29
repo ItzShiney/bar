@@ -7,9 +7,11 @@ use nom::bytes::complete::*;
 use nom::character::complete::*;
 use nom::combinator::value as nom_value;
 use nom::combinator::*;
+use nom::error::*;
 use nom::multi::*;
 use nom::number::complete::*;
 use nom::sequence::*;
+use nom::Finish;
 use nom::IResult;
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -20,6 +22,7 @@ use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Write;
+use std::num::FpCategory;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
@@ -71,30 +74,19 @@ impl Debug for VarIdent<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Derefs<'code> {
-    pub ident: VarIdent<'code>,
-    pub times: usize,
-}
-
 #[derive(Clone)]
-pub enum ValueSource<'code> {
-    Variable(VarIdent<'code>),
+pub enum RawValueSource<'code> {
     Literal(Value<'code>),
-    TakeRef(VarIdent<'code>),
-    Derefs(Derefs<'code>),
-    FunctionCall { ident: VarIdent<'code>, args: Vec<Self> },
+    Variable(VarIdent<'code>),
+    FunctionCall { ident: VarIdent<'code>, args: Vec<ValueSource<'code>> },
 }
 
-impl Display for ValueSource<'_> {
+impl Display for RawValueSource<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Self::Variable(ident) => write!(f, "{}", ident),
             Self::Literal(ref literal) => write!(f, "{}", literal),
-            Self::TakeRef(ident) => write!(f, "?{}", ident),
-            Self::Derefs(Derefs { ident, times }) => {
-                write!(f, "{}{}", "!".repeat(times), ident)
-            }
+
+            Self::Variable(ident) => write!(f, "{}", ident),
 
             Self::FunctionCall { ident, ref args } => {
                 write!(f, "{}(", ident)?;
@@ -114,30 +106,28 @@ impl Display for ValueSource<'_> {
     }
 }
 
-impl Debug for ValueSource<'_> {
+impl Debug for RawValueSource<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         Display::fmt(self, f)
     }
 }
 
-#[derive(Clone, Copy)]
-pub enum Out<'code> {
-    Ident(VarIdent<'code>),
-    Derefs(Derefs<'code>),
+#[derive(Clone)]
+pub struct ValueSource<'code> {
+    deref: bool,
+    value: RawValueSource<'code>,
 }
 
-impl Display for Out<'_> {
+impl Display for ValueSource<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            Self::Ident(ident) => write!(f, "{}", ident),
-            Self::Derefs(Derefs { ident, times }) => {
-                write!(f, "{}{}", "!".repeat(times), ident)
-            }
+        if self.deref {
+            write!(f, "*")?;
         }
+        write!(f, "{}", self.value)
     }
 }
 
-impl Debug for Out<'_> {
+impl Debug for ValueSource<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         Display::fmt(self, f)
     }
@@ -185,7 +175,7 @@ pub struct FunctionDefinition<'code> {
 
 #[derive(Clone)]
 pub enum Instruction<'code> {
-    Value { value: ValueSource<'code>, out: Option<Out<'code>> },
+    Value { value: ValueSource<'code>, out: Option<ValueSource<'code>> },
     LabelDefinition { ident: Ident<'code> },
     Go { type_: JumpType, label: Ident<'code> },
     Return,
@@ -241,16 +231,19 @@ pub fn is_ident_chr(chr: char) -> bool {
     can_start_ident(chr) || chr.is_ascii_digit()
 }
 
-pub fn spaces(input: &str) -> IResult<&str, ()> {
-    fn spaces(input: &str) -> IResult<&str, ()> {
+pub type BarVerboseError<I> = VerboseError<I>;
+pub type BarResult<I, O> = IResult<I, O, VerboseError<I>>;
+
+pub fn spaces(input: &str) -> BarResult<&str, ()> {
+    fn spaces(input: &str) -> BarResult<&str, ()> {
         nom_value((), multispace1)(input)
     }
 
-    fn line_comment(input: &str) -> IResult<&str, ()> {
+    fn line_comment(input: &str) -> BarResult<&str, ()> {
         preceded(tag("//"), cut(nom_value((), not_line_ending)))(input)
     }
 
-    fn block_comment(input: &str) -> IResult<&str, ()> {
+    fn block_comment(input: &str) -> BarResult<&str, ()> {
         delimited(tag("/*"), cut(nom_value((), take_until("*/"))), tag("*/"))(input)
     }
 
@@ -265,7 +258,7 @@ macro_rules! skip_spaces {
 
 pub fn wtag<'code, 'r>(
     tag_str: &'r str,
-) -> impl Fn(&'code str) -> IResult<&'code str, &'code str> + 'r {
+) -> impl Fn(&'code str) -> BarResult<&'code str, &'code str> + 'r {
     move |input| {
         skip_spaces!(input);
         tag(tag_str)(input)
@@ -274,12 +267,12 @@ pub fn wtag<'code, 'r>(
 
 pub fn keyword<'code: 'r, 'r>(
     keyword: &'r str,
-) -> impl FnMut(&'code str) -> IResult<&'code str, &'code str> + 'r {
+) -> impl FnMut(&'code str) -> BarResult<&'code str, &'code str> + 'r {
     verify(ident, move |ident: &str| ident == keyword)
 }
 
-pub fn ident(input: &str) -> IResult<&str, Ident> {
-    pub fn ident_chrs(input: &str) -> IResult<&str, &str> {
+pub fn ident(input: &str) -> BarResult<&str, Ident> {
+    pub fn ident_chrs(input: &str) -> BarResult<&str, &str> {
         take_while(is_ident_chr)(input)
     }
 
@@ -291,11 +284,11 @@ pub fn ident(input: &str) -> IResult<&str, Ident> {
     verify(ident_chrs, starts_as_ident)(input)
 }
 
-pub fn idents(input: &str) -> IResult<&str, Vec<Ident>> {
+pub fn idents(input: &str) -> BarResult<&str, Vec<Ident>> {
     many0(ident)(input)
 }
 
-pub fn var_ident(input: &str) -> IResult<&str, VarIdent> {
+pub fn var_ident(input: &str) -> BarResult<&str, VarIdent> {
     skip_spaces!(input);
     let (input, global_prefix) = opt(wtag("@"))(input)?;
     let (input, ident) = ident(input)?;
@@ -308,124 +301,113 @@ pub fn var_ident(input: &str) -> IResult<&str, VarIdent> {
     Ok((input, ident_f(ident)))
 }
 
-pub fn derefs(input: &str) -> IResult<&str, Derefs> {
-    let (input, times) = map(many1(wtag("!")), |v| v.len())(input)?;
-
-    map(cut(var_ident), move |ident| Derefs { ident, times })(input)
-}
-
-pub fn label_ident(input: &str) -> IResult<&str, Ident> {
+pub fn label_ident(input: &str) -> BarResult<&str, Ident> {
     ident(input)
 }
 
-pub fn var_idents(input: &str) -> IResult<&str, Vec<VarIdent>> {
+pub fn var_idents(input: &str) -> BarResult<&str, Vec<VarIdent>> {
     many0(var_ident)(input)
 }
 
-pub fn value(input: &str) -> IResult<&str, ValueSource> {
-    fn keyword_value(input: &str) -> IResult<&str, ValueSource> {
-        match ident(input)? {
-            (input, "none") => Ok((input, ValueSource::Literal(Value::None))),
-            (input, "true") => Ok((input, ValueSource::Literal(Value::Bool(true)))),
-            (input, "false") => Ok((input, ValueSource::Literal(Value::Bool(false)))),
-            (input, "nan") => Ok((input, ValueSource::Literal(Value::Number(f64::NAN)))),
-            (input, "inf") => Ok((input, ValueSource::Literal(Value::Number(f64::INFINITY)))),
-            (input, "-inf") => Ok((input, ValueSource::Literal(Value::Number(f64::NEG_INFINITY)))),
-            _ => fail(input),
-        }
+pub fn raw_value(input: &str) -> BarResult<&str, RawValueSource> {
+    fn keyword_value(input: &str) -> BarResult<&str, RawValueSource> {
+        let (new_input, res) = ident(input)?;
+
+        let res = match res {
+            "none" => Value::None,
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            "nan" => Value::Number(f64::NAN),
+            "inf" => Value::Number(f64::INFINITY),
+            "-inf" => Value::Number(f64::NEG_INFINITY),
+            _ => return fail(input),
+        };
+        let res = RawValueSource::Literal(res);
+
+        Ok((new_input, res))
     }
 
-    fn var(input: &str) -> IResult<&str, ValueSource> {
-        fn args(input: &str) -> IResult<&str, Vec<ValueSource>> {
+    fn var(input: &str) -> BarResult<&str, RawValueSource> {
+        fn args(input: &str) -> BarResult<&str, Vec<ValueSource>> {
             delimited(wtag("("), cut(values), cut(wtag(")")))(input)
         }
 
         let (input, ident) = var_ident(input)?;
 
         Ok(match args(input) {
-            Err(_) => (input, ValueSource::Variable(ident)),
-            Ok((input, args)) => (input, ValueSource::FunctionCall { ident, args }),
+            Err(_) => (input, RawValueSource::Variable(ident)),
+            Ok((input, args)) => (input, RawValueSource::FunctionCall { ident, args }),
         })
     }
 
-    fn take_ref(input: &str) -> IResult<&str, ValueSource> {
-        preceded(wtag("?"), cut(map(var_ident, ValueSource::TakeRef)))(input)
-    }
-
-    fn derefs_ident(input: &str) -> IResult<&str, ValueSource> {
-        map(derefs, ValueSource::Derefs)(input)
-    }
-
-    fn number(input: &str) -> IResult<&str, ValueSource> {
+    fn number(input: &str) -> BarResult<&str, RawValueSource> {
         skip_spaces!(input);
         let (input, res) = double(input)?;
 
-        Ok((input, ValueSource::Literal(Value::Number(res))))
+        Ok((input, RawValueSource::Literal(Value::Number(res))))
     }
 
-    fn string(input: &str) -> IResult<&str, ValueSource> {
+    fn string(input: &str) -> BarResult<&str, RawValueSource> {
         let (input, res) = delimited(wtag("\""), take_until("\""), tag("\""))(input)?;
 
-        Ok((input, ValueSource::Literal(Value::String(Cow::Borrowed(res)))))
+        Ok((input, RawValueSource::Literal(Value::String(Cow::Borrowed(res)))))
     }
 
-    alt((number, keyword_value, var, take_ref, derefs_ident, string))(input)
+    alt((number, keyword_value, var, string))(input)
 }
 
-pub fn values(input: &str) -> IResult<&str, Vec<ValueSource>> {
+pub fn value(input: &str) -> BarResult<&str, ValueSource> {
+    let (input, deref) = map(opt(wtag("*")), |res| res.is_some())(input)?;
+
+    map(raw_value, move |value| ValueSource { deref, value })(input)
+}
+
+pub fn values(input: &str) -> BarResult<&str, Vec<ValueSource>> {
     many0(value)(input)
 }
 
-pub fn instruction(input: &str) -> IResult<&str, Instruction> {
-    fn instruction_out(input: &str) -> IResult<&str, Out> {
-        fn out_ident(input: &str) -> IResult<&str, Out> {
-            map(var_ident, Out::Ident)(input)
-        }
-
-        fn out_derefs(input: &str) -> IResult<&str, Out> {
-            map(derefs, Out::Derefs)(input)
-        }
-
-        preceded(wtag(">"), cut(alt((out_ident, out_derefs))))(input)
+pub fn instruction(input: &str) -> BarResult<&str, Instruction> {
+    fn instruction_out(input: &str) -> BarResult<&str, ValueSource> {
+        preceded(wtag(">"), cut(value))(input)
     }
 
-    fn write_value(input: &str) -> IResult<&str, Instruction> {
+    fn write_value(input: &str) -> BarResult<&str, Instruction> {
         let (input, (value, out)) = pair(value, opt(instruction_out))(input)?;
 
         Ok((input, Instruction::Value { value, out }))
     }
 
-    fn label_definition(input: &str) -> IResult<&str, Instruction> {
+    fn label_definition(input: &str) -> BarResult<&str, Instruction> {
         let (input, (_, ident)) = (wtag(":"), cut(label_ident)).parse(input)?;
 
         Ok((input, Instruction::LabelDefinition { ident }))
     }
 
-    fn go(input: &str) -> IResult<&str, Instruction> {
+    fn go(input: &str) -> BarResult<&str, Instruction> {
         let (input, label) = preceded(keyword("go"), cut(label_ident))(input)?;
 
         Ok((input, Instruction::Go { type_: JumpType::Forced, label }))
     }
 
-    fn goif(input: &str) -> IResult<&str, Instruction> {
+    fn goif(input: &str) -> BarResult<&str, Instruction> {
         let (input, label) = preceded(keyword("goif"), cut(label_ident))(input)?;
 
         Ok((input, Instruction::Go { type_: JumpType::If, label }))
     }
 
-    fn goifn(input: &str) -> IResult<&str, Instruction> {
+    fn goifn(input: &str) -> BarResult<&str, Instruction> {
         let (input, label) = preceded(keyword("goifn"), cut(label_ident))(input)?;
 
         Ok((input, Instruction::Go { type_: JumpType::IfNot, label }))
     }
 
-    fn ret(input: &str) -> IResult<&str, Instruction> {
+    fn ret(input: &str) -> BarResult<&str, Instruction> {
         nom_value(Instruction::Return, keyword("ret"))(input)
     }
 
-    fn function_definition(input: &str) -> IResult<&str, Instruction> {
-        fn function_signature(input: &str) -> IResult<&str, FunctionSignature> {
-            fn function_signature_args(input: &str) -> IResult<&str, Vec<Ident>> {
+    fn function_definition(input: &str) -> BarResult<&str, Instruction> {
+        fn function_signature(input: &str) -> BarResult<&str, FunctionSignature> {
+            fn function_signature_args(input: &str) -> BarResult<&str, Vec<Ident>> {
                 delimited(wtag("("), idents, wtag(")"))(input)
             }
 
@@ -449,8 +431,16 @@ pub fn instruction(input: &str) -> IResult<&str, Instruction> {
     Ok((input, instruction))
 }
 
-pub fn instructions(input: &str) -> IResult<&str, Vec<Instruction>> {
-    terminated(many0(instruction), cut(spaces))(input)
+pub fn instructions(input: &str) -> BarResult<&str, Vec<Instruction>> {
+    many0(instruction)(input)
+}
+
+pub fn program(input: &str) -> Result<Vec<Instruction>, BarVerboseError<&str>> {
+    let (input, res) = instructions(input).finish()?;
+    let (input, _) = spaces(input).finish()?;
+    eof(input).finish()?;
+
+    Ok(res)
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -489,7 +479,6 @@ pub enum Value<'code> {
     Number(f64),
     String(Cow<'code, str>),
     Trace(Trace),
-    Ref(ValueRef<'code>),
     List(Vec<ValueRef<'code>>),
 }
 
@@ -501,7 +490,14 @@ impl Value<'_> {
             return None;
         }
 
-        Some(res as usize - 1)
+        if !matches!(res.classify(), FpCategory::Normal | FpCategory::Zero) {
+            return None;
+        }
+
+        let res = res as usize;
+        let res = res.checked_sub(1)?;
+
+        Some(res)
     }
 }
 
@@ -539,12 +535,6 @@ impl<'code> From<Cow<'code, str>> for Value<'code> {
     }
 }
 
-impl<'code> From<ValueRef<'code>> for Value<'code> {
-    fn from(value: ValueRef<'code>) -> Self {
-        Self::Ref(value)
-    }
-}
-
 impl<'code, T: Into<Value<'code>>> From<Option<T>> for Value<'code> {
     fn from(value: Option<T>) -> Self {
         match value {
@@ -570,7 +560,6 @@ impl Display for Value<'_> {
 
             Self::String(ref string) => write!(f, "{}", string),
             Self::Trace(ref trace) => write!(f, "{}", trace),
-            Self::Ref(ref value) => write!(f, "?{}", value.borrow()),
 
             Self::List(ref list) => {
                 write!(f, "list(")?;
@@ -597,7 +586,6 @@ impl PartialOrd for Value<'_> {
             (Self::Bool(lhs), Self::Bool(rhs)) => lhs.partial_cmp(rhs),
             (Self::Number(lhs), Self::Number(rhs)) => lhs.partial_cmp(rhs),
             (Self::String(lhs), Self::String(rhs)) => lhs.partial_cmp(rhs),
-            (Self::Ref(lhs), Self::Ref(rhs)) => lhs.partial_cmp(rhs),
             (Self::Trace(_), Self::Trace(_)) => Some(Ordering::Equal),
             (Self::List(lhs), Self::List(rhs)) => lhs.partial_cmp(rhs),
 
@@ -606,7 +594,6 @@ impl PartialOrd for Value<'_> {
                 | Self::Bool(_)
                 | Self::Number(_)
                 | Self::String(_)
-                | Self::Ref(_)
                 | Self::List(_)
                 | Self::Trace(_),
                 _,
@@ -619,6 +606,21 @@ pub type ValueRef<'code> = Rc<RefCell<Value<'code>>>;
 
 pub fn value_ref(value: Value<'_>) -> ValueRef {
     Rc::new(value.into())
+}
+
+pub fn none_ref<'code>() -> ValueRef<'code> {
+    value_ref(Value::None)
+}
+
+pub fn maybe_value_ref(value: Option<ValueRef<'_>>) -> ValueRef {
+    match value {
+        None => none_ref(),
+        Some(value) => value,
+    }
+}
+
+pub fn cp<'code>(value: &ValueRef<'code>) -> ValueRef<'code> {
+    value_ref(value.borrow().clone())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -652,7 +654,7 @@ impl<'code> Instructions<'code> {
     }
 
     fn local_rev(&self) -> impl Iterator<Item = &Instruction<'code>> {
-        self.local().map(|local| local.iter().rev()).into_iter().flatten()
+        self.local().map(|local| local.iter().rev()).unwrap_or_default()
     }
 
     fn all_rev(&self) -> impl Iterator<Item = &Instruction<'code>> {
@@ -663,24 +665,31 @@ impl<'code> Instructions<'code> {
         let mut instruction_idx = 0;
 
         'run: while instruction_idx < self.current().len() {
-            let instruction = &self.current()[instruction_idx];
+            let instruction = self.current()[instruction_idx].clone();
             instruction_idx += 1;
 
-            match *instruction {
-                Instruction::Value { ref value, out } => {
-                    let value = vm.value(self, value.clone());
+            match instruction {
+                Instruction::Value { value, out } => {
+                    let value = vm.value(self, &value);
 
                     if let Some(out) = out {
-                        match out {
-                            Out::Ident(ident) => {
-                                match ident {
-                                    VarIdent::Global(ident) => vm.globals.insert(ident, value),
-                                    VarIdent::Local(ident) => vm.locals_mut().insert(ident, value),
-                                };
-                            }
+                        if out.deref {
+                            let out = vm.raw_value(self, &out.value);
+                            let value = value.borrow().clone();
 
-                            Out::Derefs(derefs) => {
-                                vm.derefs_mut(derefs, |out| *out = value);
+                            *out.borrow_mut() = value;
+                        } else {
+                            match out.value {
+                                RawValueSource::Variable(ident) => {
+                                    match ident {
+                                        VarIdent::Global(ident) => vm.globals.insert(ident, value),
+                                        VarIdent::Local(ident) => {
+                                            vm.locals_mut().insert(ident, value)
+                                        }
+                                    };
+                                }
+
+                                _ => panic!("expected a variable name"),
                             }
                         }
                     }
@@ -728,7 +737,7 @@ impl<'code> Instructions<'code> {
                             Instruction::LabelDefinition { ident: definition_ident }
                                 if label == definition_ident =>
                             {
-                                continue 'run
+                                continue 'run;
                             }
 
                             _ => {}
@@ -794,7 +803,7 @@ impl<'code> Instructions<'code> {
         vm: &mut VM<'code>,
         ident: VarIdent<'code>,
         args: Vec<ValueSource<'code>>,
-    ) -> Value<'code> {
+    ) -> ValueRef<'code> {
         match self.find_function_definition(ident) {
             None => self.call_native_function(vm, ident.into(), args),
 
@@ -808,7 +817,7 @@ impl<'code> Instructions<'code> {
                     for either_or_both in signature_args.into_iter().zip_longest(args) {
                         match either_or_both {
                             EitherOrBoth::Both(ident, value) => {
-                                let value = vm.value(self, value);
+                                let value = vm.value(self, &value);
                                 locals.insert(ident, value);
                             }
 
@@ -826,10 +835,9 @@ impl<'code> Instructions<'code> {
                         panic!("expected local variable '{}' to exist, since it is being returned", out_ident);
                     };
 
-                    let ref_ = out_value.borrow();
-                    ref_.clone()
+                    out_value
                 } else {
-                    Value::None
+                    none_ref()
                 }
             }
         }
@@ -840,8 +848,8 @@ impl<'code> Instructions<'code> {
         vm: &mut VM<'code>,
         ident: Ident<'code>,
         args: Vec<ValueSource<'code>>,
-    ) -> Value<'code> {
-        let mut args = args.into_iter().map(|value| vm.value(self, value));
+    ) -> ValueRef<'code> {
+        let mut args = args.into_iter().map(|value| vm.value(self, &value));
 
         fn next_arg<'code>(args: &mut impl Iterator<Item = ValueRef<'code>>) -> ValueRef<'code> {
             args.next().expect("expected an argument")
@@ -855,8 +863,8 @@ impl<'code> Instructions<'code> {
             arg.borrow().as_index().expect("expected an index")
         }
 
-        fn as_ref<'code>(arg: ValueRef<'code>) -> ValueRef<'code> {
-            arg.borrow().as_ref().cloned().expect("expected a reference")
+        fn assert_empty<'code>(mut args: impl Iterator<Item = ValueRef<'code>>) {
+            assert!(args.next().is_none(), "invalid arguments count");
         }
 
         macro_rules! let_borrow {
@@ -881,24 +889,40 @@ impl<'code> Instructions<'code> {
             };
         }
 
-        match ident {
+        macro_rules! verify {
+            (
+                $res:expr;
+                $check:stmt;
+            ) => {{
+                let res = $res;
+                $check
+                res
+            }};
+        }
+
+        let res: ValueRef<'_> = match ident {
+            "cp" => verify!(
+                value_ref(next_arg(&mut args).borrow().clone());
+                assert_empty(args);
+            ),
+
             "sum" => {
                 let mut res = 0.;
                 for arg in args {
                     res += as_number(arg);
                 }
 
-                res.into()
+                value_ref(res.into())
             }
 
             "sub" => {
                 let mut res = as_number(next_arg(&mut args));
 
                 for arg in args {
-                    res -= arg.borrow().as_number().expect("expected a number");
+                    res -= as_number(arg);
                 }
 
-                res.into()
+                value_ref(res.into())
             }
 
             "join" => {
@@ -907,7 +931,7 @@ impl<'code> Instructions<'code> {
                     write!(&mut res, "{}", arg.borrow()).unwrap();
                 }
 
-                Value::String(Cow::Owned(res))
+                value_ref(Value::String(Cow::Owned(res)))
             }
 
             "prin" => {
@@ -915,7 +939,7 @@ impl<'code> Instructions<'code> {
                     print!("{}", arg.borrow());
                 }
 
-                Value::None
+                none_ref()
             }
 
             "print" => {
@@ -924,73 +948,92 @@ impl<'code> Instructions<'code> {
                 }
                 println!();
 
-                Value::None
+                none_ref()
             }
 
             "cmp" => {
                 let (a, b) = args.collect_tuple().expect("expected exactly 2 arguments");
 
-                a.partial_cmp(&b).map(Value::from).into()
+                value_ref(a.partial_cmp(&b).map(Value::from).into())
             }
 
-            // TODO?: a.partial_cmp(b).expect("cannot compare values of different types")
-            "eq" => Value::Bool(args.tuple_windows().all(|(a, b)| a == b)),
-            "ne" => Value::Bool(args.tuple_windows().all(|(a, b)| a != b)),
-            "lt" => Value::Bool(args.tuple_windows().all(|(a, b)| a < b)),
-            "gt" => Value::Bool(args.tuple_windows().all(|(a, b)| a > b)),
-            "le" => Value::Bool(args.tuple_windows().all(|(a, b)| a <= b)),
-            "ge" => Value::Bool(args.tuple_windows().all(|(a, b)| a >= b)),
-
-            "list" => Value::List(args.collect()),
+            "list" => value_ref(Value::List(args.collect())),
 
             "at" => {
-                let list_or_ref = next_arg(&mut args);
-                let_borrow!(list_or_ref);
+                let list = next_arg(&mut args);
+                let_borrow!(list);
+                let list = list.as_list().expect("expected a list");
 
                 let idx = as_index(next_arg(&mut args));
 
-                match list_or_ref {
-                    Value::Ref(list_ref) => match &*list_ref.borrow() {
-                        Value::List(list) => Value::Ref(list[idx].clone()),
-                        _ => panic!("expected a list or a reference to list"),
-                    },
-
-                    Value::List(list) => list[idx].borrow().clone(),
-
-                    _ => panic!("expected a list or a reference to list"),
-                }
+                verify!(
+                    list[idx].clone();
+                    assert_empty(args);
+                )
             }
 
             "push" => {
-                let list = as_ref(next_arg(&mut args));
+                let list = next_arg(&mut args);
                 let_borrow!(mut list);
                 let_as_list!(mut list);
 
-                list.extend(args).into()
+                value_ref(list.extend(args).into())
             }
 
             "pop" => {
-                let list = as_ref(next_arg(&mut args));
+                let list = next_arg(&mut args);
                 let_borrow!(mut list);
                 let_as_list!(mut list);
 
-                list.pop().into()
+                match list.pop().into() {
+                    None => none_ref(),
+                    Some(value) => value,
+                }
             }
 
             "pop-at" => {
-                let list = as_ref(next_arg(&mut args));
+                let list = next_arg(&mut args);
                 let_borrow!(mut list);
                 let_as_list!(mut list);
 
                 let idx = as_index(next_arg(&mut args));
 
-                list.remove(idx).into()
+                verify!(
+                    list.remove(idx).into();
+                    assert_empty(args);
+                )
             }
 
-            "trace" => Value::Trace(Trace::default()),
+            "trace" => verify!(
+                value_ref(Value::Trace(Trace::default()));
+                assert_empty(args);
+            ),
 
-            _ => panic!("function '{}' was not found", ident),
-        }
+            _ => {
+                fn get_cmp<'code>(
+                    ident: Ident<'code>,
+                ) -> Option<fn(ValueRef<'code>, ValueRef<'code>) -> bool> {
+                    Some(match ident {
+                        // TODO?: a.partial_cmp(b).expect("cannot compare values of different types")
+                        "eq" => |a, b| a == b,
+                        "ne" => |a, b| a != b,
+                        "lt" => |a, b| a < b,
+                        "gt" => |a, b| a > b,
+                        "le" => |a, b| a <= b,
+                        "ge" => |a, b| a >= b,
+                        _ => None?,
+                    })
+                }
+
+                if let Some(cmp) = get_cmp(ident) {
+                    value_ref(Value::Bool(args.tuple_windows().all(|(a, b)| cmp(a, b))))
+                } else {
+                    panic!("function '{}' was not found", ident);
+                }
+            }
+        };
+
+        res
     }
 }
 
@@ -1001,8 +1044,8 @@ pub struct VM<'code> {
 }
 
 impl<'code> VM<'code> {
-    pub fn run(&mut self, code: &'code str) -> Result<(), CompileError> {
-        let (_, instructions) = instructions(code).unwrap();
+    pub fn run(&mut self, code: &'code str) -> Result<(), BarVerboseError<&'code str>> {
+        let instructions = program(code)?;
 
         let mut instructions = Instructions::new(instructions);
         instructions.run(self);
@@ -1047,66 +1090,44 @@ impl<'code> VM<'code> {
         }
     }
 
-    pub fn value(
+    pub fn raw_value(
         &mut self,
         instructions: &mut Instructions<'code>,
-        value: ValueSource<'code>,
+        source: &RawValueSource<'code>,
     ) -> ValueRef<'code> {
-        match value {
-            ValueSource::Variable(ident) => {
+        match *source {
+            RawValueSource::Variable(ident) => {
                 self.var(ident).expect("expected the variable to exist").clone()
             }
 
-            ValueSource::Literal(ref literal) => value_ref(literal.clone()),
+            RawValueSource::Literal(ref literal) => value_ref(literal.clone()),
 
-            ValueSource::TakeRef(ident) => value_ref(Value::Ref(
-                self.var(ident).expect("expected the variable to exist").clone(),
-            )),
-
-            ValueSource::Derefs(derefs) => self.derefs(derefs),
-
-            ValueSource::FunctionCall { ident, args } => {
-                value_ref(instructions.call_function(self, ident, args))
+            RawValueSource::FunctionCall { ident, ref args } => {
+                instructions.call_function(self, ident, args.clone())
             }
         }
     }
 
-    pub fn derefs(&self, Derefs { ident, times }: Derefs<'code>) -> ValueRef<'code> {
-        let mut res = self.var(ident).expect("expected the variable to exist").clone();
-
-        for _ in 1..=times {
-            let new_res = (*res.borrow()).as_ref().cloned().expect("expected a reference");
-            res = new_res;
-        }
-
-        res
-    }
-
-    pub fn derefs_mut(
+    pub fn value(
         &mut self,
-        Derefs { ident, times }: Derefs<'code>,
-        f: impl FnOnce(&mut ValueRef<'code>),
-    ) {
-        fn rec<'code>(
-            value: &mut ValueRef<'code>,
-            times: usize,
-            f: impl FnOnce(&mut ValueRef<'code>),
-        ) {
-            if times == 0 {
-                f(value);
-            } else {
-                let mut borrow = value.borrow_mut();
-                rec(borrow.as_ref_mut().expect("expected a reference"), times - 1, f)
-            }
-        }
+        instructions: &mut Instructions<'code>,
+        source: &ValueSource<'code>,
+    ) -> ValueRef<'code> {
+        let value = self.raw_value(instructions, &source.value);
 
-        let res = self.var_mut(ident).expect("expected the variable to exist");
-        rec(res, times, f);
+        if source.deref {
+            cp(&value)
+        } else {
+            value
+        }
     }
 }
 
 fn main() {
     let mut vm = VM::default();
+    let input = include_str!("code.bar");
 
-    vm.run(include_str!("code.bar")).unwrap();
+    if let Err(err) = vm.run(input) {
+        println!("{}", convert_error(input, err));
+    }
 }

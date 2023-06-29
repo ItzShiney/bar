@@ -1,5 +1,6 @@
-list(1 2 3) > l
+list(1 trace() 3) > l
 print(l)
 
-pop-at(?l 2) > x
-print(!x)
+pop-at(l 2) > x
+print(x)
+print(l)
