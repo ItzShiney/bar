@@ -272,16 +272,8 @@ pub fn keyword<'code: 'r, 'r>(
 }
 
 pub fn ident(input: &str) -> BarResult<&str, Ident> {
-    pub fn ident_chrs(input: &str) -> BarResult<&str, &str> {
-        take_while(is_ident_chr)(input)
-    }
-
-    fn starts_as_ident(input: &str) -> bool {
-        input.chars().next().map(can_start_ident).unwrap_or_default()
-    }
-
     skip_spaces!(input);
-    verify(ident_chrs, starts_as_ident)(input)
+    recognize(pair(take_while_m_n(1, 1, can_start_ident), take_while(is_ident_chr)))(input)
 }
 
 pub fn idents(input: &str) -> BarResult<&str, Vec<Ident>> {
