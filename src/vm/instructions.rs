@@ -385,6 +385,12 @@ impl<'code> Instructions<'code> {
                 GcValue::new(a.partial_cmp(&b).map(Value::from).into())
             }
 
+            "is" => {
+                let (a, b) = args.collect_tuple().expect("expected exactly 2 arguments");
+
+                GcValue::new(a.ptr_eq(&b).into())
+            }
+
             "list" => GcValue::new(Value::List(args.collect())),
 
             "at" => {

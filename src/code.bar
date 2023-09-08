@@ -1,7 +1,0 @@
-1 > a
-*a > b
-
-2 > *a
-
-print(a)
-print(b)

@@ -36,6 +36,10 @@ impl<'code> GcValue<'code> {
     pub fn cp(&self) -> GcValue<'code> {
         GcValue::new(self.borrow().clone())
     }
+
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 impl Display for GcValue<'_> {
