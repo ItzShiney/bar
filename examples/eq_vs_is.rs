@@ -8,6 +8,7 @@ fn main() {
     let input = "
         1 > a
         1 > b
+        print(eq(a b))
         print(is(a b))
     ";
 
