@@ -4,6 +4,8 @@ fn main() {
     let mut vm = VM::default();
     let input = r#"
         { nth-fibonacci(n) > a
+            cp(n) > n
+            
             1 > a
             1 > b
             :loop
@@ -14,7 +16,7 @@ fn main() {
                 b > a
                 b-new > b
 
-                sub(n 1) > n
+                dec(n)
                 go loop
             :loop-end
         }
@@ -22,7 +24,7 @@ fn main() {
         0 > n
         :loop
             print("F(" n ") = " nth-fibonacci(n))
-            sum(n 1) > n
+            inc(n)
 
             le(n 20) > @if
             goif loop

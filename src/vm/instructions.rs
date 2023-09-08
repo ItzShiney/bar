@@ -339,6 +339,52 @@ impl<'code> Instructions<'code> {
                 assert_empty(args);
             ),
 
+            "inc" => {
+                *next_arg(&mut args)
+                    .borrow_mut()
+                    .as_number_mut()
+                    .expect("expected a number") += 1.;
+
+                assert_empty(args);
+
+                GcValue::none()
+            }
+
+            "dec" => {
+                *next_arg(&mut args)
+                    .borrow_mut()
+                    .as_number_mut()
+                    .expect("expected a number") -= 1.;
+
+                assert_empty(args);
+
+                GcValue::none()
+            }
+
+            "add" => {
+                let num = next_arg(&mut args);
+                let mut num = num.borrow_mut();
+                let num = num.as_number_mut().expect("expected a number");
+
+                for arg in args {
+                    *num += as_number(arg);
+                }
+
+                GcValue::none()
+            }
+
+            "sub" => {
+                let num = next_arg(&mut args);
+                let mut num = num.borrow_mut();
+                let num = num.as_number_mut().expect("expected a number");
+
+                for arg in args {
+                    *num -= as_number(arg);
+                }
+
+                GcValue::none()
+            }
+
             "sum" => {
                 let mut res = 0.;
                 for arg in args {
@@ -348,7 +394,7 @@ impl<'code> Instructions<'code> {
                 GcValue::new(res.into())
             }
 
-            "sub" => {
+            "dif" => {
                 let mut res = as_number(next_arg(&mut args));
 
                 for arg in args {
