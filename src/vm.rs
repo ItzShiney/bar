@@ -1,12 +1,12 @@
 use {
     self::instructions::{
         program,
-        BarVerboseError,
         Instructions,
         RawValueSource,
         ValueSource,
         VarIdent,
     },
+    nom::error::convert_error,
     std::collections::hash_map,
 };
 
@@ -36,8 +36,8 @@ pub struct VM<'code> {
 }
 
 impl<'code> VM<'code> {
-    pub fn run(&mut self, code: &'code str) -> Result<(), BarVerboseError<&'code str>> {
-        let instructions = program(code)?;
+    pub fn run(&mut self, code: &'code str) -> Result<(), String> {
+        let instructions = program(code).map_err(|err| convert_error(code, err))?;
 
         let mut instructions = Instructions::new(instructions);
         instructions.run(self);

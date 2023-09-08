@@ -1,7 +1,4 @@
-use {
-    bar::VM,
-    nom::error::convert_error,
-};
+use bar::VM;
 
 fn main() {
     let mut vm = VM::default();
@@ -13,6 +10,6 @@ fn main() {
     ";
 
     if let Err(err) = vm.run(input) {
-        println!("{}", convert_error(input, err));
+        println!("{}", err);
     }
 }
