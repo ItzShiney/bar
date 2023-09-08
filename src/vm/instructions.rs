@@ -334,6 +334,11 @@ impl<'code> Instructions<'code> {
                 assert_empty(args);
             ),
 
+            "num" => verify!(
+                GcValue::new(next_arg(&mut args).borrow().as_string().expect("expected a string").parse::<f64>().expect("failed to parse the string into a number").into());
+                assert_empty(args);
+            ),
+
             "sum" => {
                 let mut res = 0.;
                 for arg in args {
