@@ -22,7 +22,7 @@ pub enum Value<'code> {
 }
 
 impl Value<'_> {
-    pub fn as_index(&self) -> Option<usize> {
+    pub fn as_size(&self) -> Option<usize> {
         let res = self.as_number().copied()?;
 
         if (res.floor() - res).abs() > 1e-2 {
@@ -33,10 +33,11 @@ impl Value<'_> {
             return None;
         }
 
-        let res = res as usize;
-        let res = res.checked_sub(1)?;
+        Some(res as usize)
+    }
 
-        Some(res)
+    pub fn as_index(&self) -> Option<usize> {
+        self.as_size().and_then(|res| res.checked_sub(1))
     }
 }
 

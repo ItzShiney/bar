@@ -287,6 +287,10 @@ impl<'code> Instructions<'code> {
                 .expect("expected a number")
         }
 
+        fn as_size<'code>(arg: GcValue<'code>) -> usize {
+            arg.borrow().as_size().expect("expected a size")
+        }
+
         fn as_index<'code>(arg: GcValue<'code>) -> usize {
             arg.borrow().as_index().expect("expected an index")
         }
@@ -443,6 +447,14 @@ impl<'code> Instructions<'code> {
             }
 
             "list" => GcValue::new(Value::List(args.collect())),
+
+            "dup" => {
+                let item = args.next().expect("expected exactly 2 arguments");
+                let times = as_size(args.next().expect("expected exactly 2 arguments"));
+
+                let list = std::iter::repeat(item).take(times).collect_vec();
+                GcValue::new(Value::List(list))
+            }
 
             "at" => {
                 let list = next_arg(&mut args);
