@@ -26,8 +26,8 @@ pub use {
 #[derive(Debug, Clone, Copy)]
 pub struct CompileError;
 
-#[derive(Debug, Clone, Copy)]
-pub struct UnknownVariable;
+#[derive(Debug, Clone)]
+pub struct UnknownVariable<'code>(VarIdent<'code>);
 
 #[derive(Default)]
 pub struct VM<'code> {
@@ -58,7 +58,7 @@ impl<'code> VM<'code> {
             VarIdent::Global(ident) => self.globals.get(ident),
             VarIdent::Local(ident) => self.locals().get(ident),
         }
-        .ok_or(UnknownVariable)
+        .ok_or(UnknownVariable(ident))
     }
 
     pub fn var_mut(
@@ -69,7 +69,7 @@ impl<'code> VM<'code> {
             VarIdent::Global(ident) => self.globals.get_mut(ident),
             VarIdent::Local(ident) => self.locals_mut().get_mut(ident),
         }
-        .ok_or(UnknownVariable)
+        .ok_or(UnknownVariable(ident))
     }
 
     pub fn var_entry(
