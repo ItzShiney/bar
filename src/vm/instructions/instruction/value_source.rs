@@ -18,6 +18,16 @@ pub enum RawValueSource<'code> {
     },
 }
 
+impl RawValueSource<'_> {
+    pub fn is_pure(&self) -> bool {
+        match self {
+            RawValueSource::Literal(..) => true,
+            RawValueSource::Variable(..) => true,
+            RawValueSource::FunctionCall { .. } => false,
+        }
+    }
+}
+
 impl Display for RawValueSource<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {

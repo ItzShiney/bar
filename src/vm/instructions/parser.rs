@@ -181,6 +181,10 @@ pub fn instruction(input: &str) -> BarResult<&str, Instruction> {
     fn write_value(input: &str) -> BarResult<&str, Instruction> {
         let (input, (value, out)) = pair(value, opt(instruction_out))(input)?;
 
+        if value.value.is_pure() && out.is_none() {
+            return fail(input);
+        }
+
         Ok((input, Instruction::Value { value, out }))
     }
 
