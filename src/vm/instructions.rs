@@ -1,13 +1,7 @@
 use {
-    super::{
-        none_ref,
-        ValueRef,
-    },
+    super::GcValue,
     crate::{
-        vm::{
-            value_ref,
-            Value,
-        },
+        vm::Value,
         Trace,
     },
     itertools::{
@@ -181,9 +175,9 @@ impl<'code> Instructions<'code> {
     fn run_function(
         &mut self,
         vm: &mut VM<'code>,
-        locals: HashMap<&'code str, ValueRef<'code>>,
+        locals: HashMap<&'code str, GcValue<'code>>,
         ident: VarIdent<'code>,
-    ) -> HashMap<&'code str, ValueRef<'code>> {
+    ) -> HashMap<&'code str, GcValue<'code>> {
         vm.locals.push(locals);
 
         let instructions: &[_] = &self.find_function_definition(ident).unwrap().body;
@@ -231,7 +225,7 @@ impl<'code> Instructions<'code> {
         vm: &mut VM<'code>,
         ident: VarIdent<'code>,
         args: Vec<ValueSource<'code>>,
-    ) -> ValueRef<'code> {
+    ) -> GcValue<'code> {
         match self.find_function_definition(ident) {
             None => self.call_native_function(vm, ident.into(), args),
 
@@ -268,7 +262,7 @@ impl<'code> Instructions<'code> {
 
                     out_value
                 } else {
-                    none_ref()
+                    GcValue::none()
                 }
             }
         }
@@ -279,25 +273,25 @@ impl<'code> Instructions<'code> {
         vm: &mut VM<'code>,
         ident: Ident<'code>,
         args: Vec<ValueSource<'code>>,
-    ) -> ValueRef<'code> {
+    ) -> GcValue<'code> {
         let mut args = args.into_iter().map(|value| vm.value(self, &value));
 
-        fn next_arg<'code>(args: &mut impl Iterator<Item = ValueRef<'code>>) -> ValueRef<'code> {
+        fn next_arg<'code>(args: &mut impl Iterator<Item = GcValue<'code>>) -> GcValue<'code> {
             args.next().expect("expected an argument")
         }
 
-        fn as_number<'code>(arg: ValueRef<'code>) -> f64 {
+        fn as_number<'code>(arg: GcValue<'code>) -> f64 {
             arg.borrow()
                 .as_number()
                 .copied()
                 .expect("expected a number")
         }
 
-        fn as_index<'code>(arg: ValueRef<'code>) -> usize {
+        fn as_index<'code>(arg: GcValue<'code>) -> usize {
             arg.borrow().as_index().expect("expected an index")
         }
 
-        fn assert_empty<'code>(mut args: impl Iterator<Item = ValueRef<'code>>) {
+        fn assert_empty<'code>(mut args: impl Iterator<Item = GcValue<'code>>) {
             assert!(args.next().is_none(), "invalid arguments count");
         }
 
@@ -334,9 +328,9 @@ impl<'code> Instructions<'code> {
             }};
         }
 
-        let res: ValueRef<'_> = match ident {
+        let res: GcValue<'_> = match ident {
             "cp" => verify!(
-                value_ref(next_arg(&mut args).borrow().clone());
+                GcValue::new(next_arg(&mut args).borrow().clone());
                 assert_empty(args);
             ),
 
@@ -346,7 +340,7 @@ impl<'code> Instructions<'code> {
                     res += as_number(arg);
                 }
 
-                value_ref(res.into())
+                GcValue::new(res.into())
             }
 
             "sub" => {
@@ -356,7 +350,7 @@ impl<'code> Instructions<'code> {
                     res -= as_number(arg);
                 }
 
-                value_ref(res.into())
+                GcValue::new(res.into())
             }
 
             "join" => {
@@ -365,7 +359,7 @@ impl<'code> Instructions<'code> {
                     write!(&mut res, "{}", arg.borrow()).unwrap();
                 }
 
-                value_ref(Value::String(Cow::Owned(res)))
+                GcValue::new(Value::String(Cow::Owned(res)))
             }
 
             "prin" => {
@@ -373,7 +367,7 @@ impl<'code> Instructions<'code> {
                     print!("{}", arg.borrow());
                 }
 
-                none_ref()
+                GcValue::none()
             }
 
             "print" => {
@@ -382,16 +376,16 @@ impl<'code> Instructions<'code> {
                 }
                 println!();
 
-                none_ref()
+                GcValue::none()
             }
 
             "cmp" => {
                 let (a, b) = args.collect_tuple().expect("expected exactly 2 arguments");
 
-                value_ref(a.partial_cmp(&b).map(Value::from).into())
+                GcValue::new(a.partial_cmp(&b).map(Value::from).into())
             }
 
-            "list" => value_ref(Value::List(args.collect())),
+            "list" => GcValue::new(Value::List(args.collect())),
 
             "at" => {
                 let list = next_arg(&mut args);
@@ -411,7 +405,7 @@ impl<'code> Instructions<'code> {
                 let_borrow!(mut list);
                 let_as_list!(mut list);
 
-                value_ref(list.extend(args).into())
+                GcValue::new(list.extend(args).into())
             }
 
             "pop" => {
@@ -420,7 +414,7 @@ impl<'code> Instructions<'code> {
                 let_as_list!(mut list);
 
                 match list.pop().into() {
-                    None => none_ref(),
+                    None => GcValue::none(),
                     Some(value) => value,
                 }
             }
@@ -439,14 +433,14 @@ impl<'code> Instructions<'code> {
             }
 
             "trace" => verify!(
-                value_ref(Value::Trace(Trace::default()));
+                GcValue::new(Value::Trace(Trace::default()));
                 assert_empty(args);
             ),
 
             _ => {
                 fn get_cmp<'code>(
                     ident: Ident<'code>,
-                ) -> Option<fn(ValueRef<'code>, ValueRef<'code>) -> bool> {
+                ) -> Option<fn(GcValue<'code>, GcValue<'code>) -> bool> {
                     Some(match ident {
                         // TODO?: a.partial_cmp(b).expect("cannot compare values of different types")
                         "eq" => |a, b| a == b,
@@ -460,7 +454,7 @@ impl<'code> Instructions<'code> {
                 }
 
                 if let Some(cmp) = get_cmp(ident) {
-                    value_ref(Value::Bool(args.tuple_windows().all(|(a, b)| cmp(a, b))))
+                    GcValue::new(Value::Bool(args.tuple_windows().all(|(a, b)| cmp(a, b))))
                 } else {
                     panic!("function '{}' was not found", ident);
                 }

@@ -10,17 +10,17 @@ use {
     std::collections::hash_map,
 };
 
+mod gc_value;
 pub mod instructions;
 mod value;
-mod value_ref;
 
 use {
     self::instructions::Ident,
     std::collections::HashMap,
 };
 pub use {
+    gc_value::*,
     value::*,
-    value_ref::*,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -31,8 +31,8 @@ pub struct UnknownVariable;
 
 #[derive(Default)]
 pub struct VM<'code> {
-    pub globals: HashMap<Ident<'code>, ValueRef<'code>>,
-    locals: Vec<HashMap<Ident<'code>, ValueRef<'code>>>,
+    pub globals: HashMap<Ident<'code>, GcValue<'code>>,
+    locals: Vec<HashMap<Ident<'code>, GcValue<'code>>>,
 }
 
 impl<'code> VM<'code> {
@@ -45,15 +45,15 @@ impl<'code> VM<'code> {
         Ok(())
     }
 
-    pub fn locals(&self) -> &HashMap<Ident<'code>, ValueRef<'code>> {
+    pub fn locals(&self) -> &HashMap<Ident<'code>, GcValue<'code>> {
         self.locals.last().unwrap_or(&self.globals)
     }
 
-    pub fn locals_mut(&mut self) -> &mut HashMap<Ident<'code>, ValueRef<'code>> {
+    pub fn locals_mut(&mut self) -> &mut HashMap<Ident<'code>, GcValue<'code>> {
         self.locals.last_mut().unwrap_or(&mut self.globals)
     }
 
-    pub fn var(&self, ident: VarIdent<'code>) -> Result<&ValueRef<'code>, UnknownVariable> {
+    pub fn var(&self, ident: VarIdent<'code>) -> Result<&GcValue<'code>, UnknownVariable> {
         match ident {
             VarIdent::Global(ident) => self.globals.get(ident),
             VarIdent::Local(ident) => self.locals().get(ident),
@@ -64,7 +64,7 @@ impl<'code> VM<'code> {
     pub fn var_mut(
         &mut self,
         ident: VarIdent<'code>,
-    ) -> Result<&mut ValueRef<'code>, UnknownVariable> {
+    ) -> Result<&mut GcValue<'code>, UnknownVariable> {
         match ident {
             VarIdent::Global(ident) => self.globals.get_mut(ident),
             VarIdent::Local(ident) => self.locals_mut().get_mut(ident),
@@ -75,7 +75,7 @@ impl<'code> VM<'code> {
     pub fn var_entry(
         &mut self,
         ident: VarIdent<'code>,
-    ) -> hash_map::Entry<&'code str, ValueRef<'code>> {
+    ) -> hash_map::Entry<&'code str, GcValue<'code>> {
         match ident {
             VarIdent::Global(ident) => self.globals.entry(ident),
             VarIdent::Local(ident) => self.locals_mut().entry(ident),
@@ -86,14 +86,14 @@ impl<'code> VM<'code> {
         &mut self,
         instructions: &mut Instructions<'code>,
         source: &RawValueSource<'code>,
-    ) -> ValueRef<'code> {
+    ) -> GcValue<'code> {
         match *source {
             RawValueSource::Variable(ident) => self
                 .var(ident)
                 .expect("expected the variable to exist")
                 .clone(),
 
-            RawValueSource::Literal(ref literal) => value_ref(literal.clone()),
+            RawValueSource::Literal(ref literal) => GcValue::new(literal.clone()),
 
             RawValueSource::FunctionCall { ident, ref args } => {
                 instructions.call_function(self, ident, args.clone())
@@ -105,11 +105,11 @@ impl<'code> VM<'code> {
         &mut self,
         instructions: &mut Instructions<'code>,
         source: &ValueSource<'code>,
-    ) -> ValueRef<'code> {
+    ) -> GcValue<'code> {
         let value = self.raw_value(instructions, &source.value);
 
         if source.deref {
-            cp(&value)
+            value.cp()
         } else {
             value
         }

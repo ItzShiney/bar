@@ -1,5 +1,5 @@
 use {
-    super::ValueRef,
+    super::GcValue,
     crate::Trace,
     core::fmt,
     enum_as_inner::EnumAsInner,
@@ -18,7 +18,7 @@ pub enum Value<'code> {
     Number(f64),
     String(Cow<'code, str>),
     Trace(Trace),
-    List(Vec<ValueRef<'code>>),
+    List(Vec<GcValue<'code>>),
 }
 
 impl Value<'_> {
