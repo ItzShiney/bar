@@ -30,7 +30,5 @@ fn main() {
             goif loop
     "#;
 
-    if let Err(err) = vm.run(input) {
-        println!("{}", err);
-    }
+    vm.run(input).unwrap();
 }

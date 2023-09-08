@@ -9,7 +9,5 @@ fn main() {
         print(is(a b))
     ";
 
-    if let Err(err) = vm.run(input) {
-        println!("{}", err);
-    }
+    vm.run(input).unwrap();
 }
