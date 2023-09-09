@@ -280,18 +280,18 @@ impl<'code> Instructions<'code> {
             args.next().expect("expected an argument")
         }
 
-        fn as_number<'code>(arg: GcValue<'code>) -> f64 {
+        fn as_number(arg: GcValue) -> f64 {
             arg.borrow()
                 .as_number()
                 .copied()
                 .expect("expected a number")
         }
 
-        fn as_size<'code>(arg: GcValue<'code>) -> usize {
+        fn as_size(arg: GcValue) -> usize {
             arg.borrow().as_size().expect("expected a size")
         }
 
-        fn as_index<'code>(arg: GcValue<'code>) -> usize {
+        fn as_index(arg: GcValue) -> usize {
             arg.borrow().as_index().expect("expected an index")
         }
 
@@ -482,7 +482,7 @@ impl<'code> Instructions<'code> {
                 let_borrow!(mut list);
                 let_as_list!(mut list);
 
-                match list.pop().into() {
+                match list.pop() {
                     None => GcValue::none(),
                     Some(value) => value,
                 }
@@ -496,11 +496,12 @@ impl<'code> Instructions<'code> {
                 let idx = as_index(next_arg(&mut args));
 
                 verify!(
-                    list.remove(idx).into();
+                    list.remove(idx);
                     assert_empty(args);
                 )
             }
 
+            #[allow(clippy::default_constructed_unit_structs)]
             "trace" => verify!(
                 GcValue::new(Value::Trace(Trace::default()));
                 assert_empty(args);

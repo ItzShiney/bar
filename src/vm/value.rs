@@ -92,7 +92,7 @@ impl Display for Value<'_> {
 
             Self::Number(number) => {
                 if number.is_nan() {
-                    write!(f, "{}", "nan")
+                    write!(f, "nan")
                 } else {
                     write!(f, "{}", number)
                 }
