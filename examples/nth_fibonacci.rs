@@ -8,7 +8,7 @@ fn main() {
             
             1 > a
             1 > b
-            :loop
+            tag loop
                 le(n 0) > @if
                 goif loop-end
 
@@ -18,11 +18,11 @@ fn main() {
 
                 dec(n)
                 go loop
-            :loop-end
+            tag loop-end
         }
 
         0 > n
-        :loop
+        tag loop
             print("F(" n ") = " nth-fibonacci(n))
             inc(n)
 

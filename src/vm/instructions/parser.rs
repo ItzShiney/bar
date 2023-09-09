@@ -189,7 +189,7 @@ pub fn instruction(input: &str) -> BarResult<&str, Instruction> {
     }
 
     fn label_definition(input: &str) -> BarResult<&str, Instruction> {
-        let (input, (_, ident)) = (wtag(":"), cut(label_ident)).parse(input)?;
+        let (input, (_, ident)) = (keyword("tag"), cut(label_ident)).parse(input)?;
 
         Ok((input, Instruction::LabelDefinition { ident }))
     }
