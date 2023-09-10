@@ -74,9 +74,9 @@ pub fn wtag<'code, 'r>(
     }
 }
 
-pub fn keyword<'code: 'r, 'r>(
-    keyword: &'r str,
-) -> impl FnMut(&'code str) -> BarResult<&'code str, &'code str> + 'r {
+pub fn keyword<'code>(
+    keyword: &'code str,
+) -> impl FnMut(&'code str) -> BarResult<&'code str, &'code str> + 'code {
     verify(ident, move |ident: &str| ident == keyword)
 }
 
