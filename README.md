@@ -34,7 +34,9 @@ If the output variable (`a`) does not exist, it gets created
 ### References
 
 Everything is always being passed by reference. Meaning `b > a` does not actually copy `b`'s value, it just makes `a` and `b` the same variable
+
 `*` operator is used to dereference, i.e. to actually update the variable's value
+
 All literal-writing operations make a new object each time they are executed, meaning in loops they do not produce the same object every time
 
 ```rs
