@@ -109,11 +109,11 @@ print(@a) // prints `2`
 
 ```rs
 // a label is defined like this
-:a
+tag a
 
 // *some code*
 
-// jumps back to `:a` and executes `*some code*` again
+// jumps back to `tag a` and executes `*some code*` again
 go a
 ```
 
@@ -124,12 +124,12 @@ go b
 
 // *some code*
 
-:b
+tag b
 ```
 
 ```rs
-// an infinite loop!
-:infinite
+// infinite loop!
+tag infinite
 go infinite
 ```
 
@@ -140,18 +140,18 @@ go infinite
 eq(a 5) > @if
 
 // "go if"
-// jumps to `:a` if `@if` is true
+// jumps to `tag a` if `@if` is true
 goif a
 
 // "go if not"
-// jumps to `:a` if `@if` is false
+// jumps to `tag a` if `@if` is false
 goifn a
 ```
 
 ```rs
 { print-1-to-10()
     1 > i
-    :loop
+    tag loop
         le(i 10) > @if
         goifn loop-end
 
@@ -159,6 +159,6 @@ goifn a
 
         sum(i 1) > i
         go loop
-    :loop-end
+    tag loop-end
 }
 ```
